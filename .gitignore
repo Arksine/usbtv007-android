@@ -17,6 +17,14 @@ out/
 .gradle/
 build/
 
+# Intellij
+*.iml
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/gradle.xml
+.idea/misc.xml
+.idea/libraries
+
 # Local configuration file (sdk path, etc)
 local.properties
 
@@ -88,3 +96,18 @@ $RECYCLE.BIN/
 
 # Windows shortcuts
 *.lnk
+
+#keystore info
+keystore.properties
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.o.d
+*.obj
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
