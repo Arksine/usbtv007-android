@@ -320,7 +320,26 @@ public class Request {
    public void getPacketData (int packetNo, byte[] buf, int len) {
       if (packetNo < 0 || packetNo >= maxPacketsPerRequest || len > maxPacketSize) {
          throw new IllegalArgumentException(); }
-      buffer.read(packetNo * maxPacketSize, buf, 0, len); }}
+      buffer.read(packetNo * maxPacketSize, buf, 0, len); }
+
+
+   /**
+    * Retreives data received from the device, however returns it as a direct
+    * byte buffer.  This allows the user to parse the data without multiple
+    * array copies.
+    * @param packetNo
+    * @param len
+    * @return
+    */
+   public ByteBuffer getPacketDataAsByteBuffer (int packetNo, int len) {
+      if (packetNo < 0 || packetNo >= maxPacketsPerRequest || len > maxPacketSize) {
+         throw new IllegalArgumentException(); }
+
+      return buffer.getByteBuffer(packetNo * maxPacketSize, len);
+   }
+}
+
+
 
 //--- Main logic ---------------------------------------------------------------
 
