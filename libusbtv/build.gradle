@@ -10,6 +10,12 @@ android {
         versionCode 1
         versionName "1.0"
 
+        ndk {
+            abiFilters "armeabi-v7a", "armeabi", "arm64-v8a", "x86", "x86-64",
+                        "mips", "mips64"
+        }
+
+
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
 
     }
@@ -20,34 +26,6 @@ android {
         }
     }
 
-    productFlavors {
-        aarch64 {
-            ndk {
-                abiFilter "aarch64"
-            }
-        }
-        mips {
-            ndk {
-                abiFilters "mips", "mips64"
-            }
-        }
-        x86 {
-            ndk {
-                abiFilters "x86", "x86-64"
-            }
-        }
-        arm {
-            ndk {
-                abiFilters "armeabi-v7a", "armeabi"
-            }
-        }
-        complete {
-            ndk {
-                abiFilters "armeabi-v7a", "armeabi", "aarch64", "mips", "mips64", "x86", "x86-64"
-            }
-        }
-
-    }
 }
 
 repositories {

@@ -2,6 +2,9 @@ package com.arksine.libusbtv;
 
 import android.hardware.usb.UsbConstants;
 import android.hardware.usb.UsbDeviceConnection;
+import android.support.annotation.NonNull;
+
+import timber.log.Timber;
 
 /**
  * Handles Control Transfers for Usbtv007 video/audio capture
@@ -15,7 +18,13 @@ import android.hardware.usb.UsbDeviceConnection;
  * - It appears that Audio is received via bulk transfer.  Video is an iso transfer
  */
 
-public class UsbtvControl {
+class UsbTvControl {
+    /**
+     * Driver Constants
+     */
+    private static final int USBTV_BASE = 0xc000;
+    private static final int USBTV_CONTROL_REGISTER = 11;
+    private static final int USBTV_REQUEST_REGISTER = 12;
 
     // A tuple containing the index and value for a control transfer
     private static class ControlTransferPair {
@@ -37,12 +46,28 @@ public class UsbtvControl {
 
     }
 
-    /**
-     * Driver Constants
-     */
-    private static final int USBTV_BASE = 0xc000;
-    private static final int USBTV_CONTROL_SEND_REGISTER = 11;
-    private static final int USBTV_CONTROL_REQ_REGISTER = 12;
+    enum ColorSetting {
+        BRIGHTNESS(new ControlTransferPair(USBTV_BASE + 0x0244, 0)),
+        CONTRAST(new ControlTransferPair(USBTV_BASE + 0x0244, 0)),
+        SATURATION(new ControlTransferPair(USBTV_BASE + 0x0242, 0)),
+        HUE(new ControlTransferPair(USBTV_BASE + 0x0240, 0)),
+        SHARPNESS(new ControlTransferPair(USBTV_BASE + 0x0239, 0));
+
+        private final ControlTransferPair controlPair;
+
+        ColorSetting(ControlTransferPair pair) {
+            this.controlPair = pair;
+        }
+
+        public int getRegisterIndex() {
+            return controlPair.getIndex();
+        }
+
+        public int getRegisterValue() {
+            return controlPair.getValue();
+        }
+
+    }
 
     // index/value of control transfer request to set composite input
     private static final ControlTransferPair[] COMPOSITE_INPUT_CTRL = {
@@ -211,7 +236,7 @@ public class UsbtvControl {
 
 
     // Static class, should not be instantiated
-    public UsbtvControl(UsbDeviceConnection connection) {
+    public UsbTvControl(UsbDeviceConnection connection) {
         mUsbtvConnection = connection;
     }
 
@@ -219,20 +244,124 @@ public class UsbtvControl {
         return sendControlTransferPacket(SETUP_VIDEO_CTRL);
     }
 
-    public boolean setVideoInputComposite() {
-        return sendControlTransferPacket(COMPOSITE_INPUT_CTRL);
+    public boolean setInput(UsbTv.InputSelection input) {
+        switch (input) {
+            case SVIDEO:
+                return sendControlTransferPacket(SVIDEO_INPUT_CTRL);
+            case COMPOSITE:
+                return sendControlTransferPacket(COMPOSITE_INPUT_CTRL);
+            default:
+                return false;
+        }
     }
 
-    public boolean setVideoInputSVideo() {
-        return sendControlTransferPacket(SVIDEO_INPUT_CTRL);
+    public boolean setTvNorm(UsbTv.TvNorm norm) {
+        switch (norm) {
+            case NTSC:
+                return sendControlTransferPacket(NTSC_CTRL);
+            case PAL:
+                return sendControlTransferPacket(PAL_CTRL);
+            default:
+                return false;
+        }
     }
 
-    public boolean setTvNormPal() {
-        return sendControlTransferPacket(PAL_CTRL);
+
+    public boolean setControlValue(@NonNull ColorSetting setting, int value) {
+
+        int ret;
+        byte[] buf;
+
+        // Get the current brightness and contrast setting if  that is what we are to use
+        if (setting == ColorSetting.CONTRAST || setting == ColorSetting.BRIGHTNESS) {
+            buf = new byte[3];
+            ret = settingsTransfer(buf, setting.getRegisterIndex(), buf.length);
+            if (ret < 0) {
+                Timber.i("Failed to retreive setting");
+                return false;
+            }
+            Timber.d("First Contrast/Brightness byte: %#x\n" +
+                    "Second Contrast/Brightness byte: %#x\n" +
+                    "Third Contrast/Brightness byte: %#x", buf[0], buf[1], buf[2]);
+        } else {
+            buf = new byte[2];
+        }
+
+        switch (setting) {
+            case BRIGHTNESS:
+                buf[0] = (byte)(buf[0] & 0xf0);
+                buf[0] = (byte)(buf[0] | ((value >> 8) &0x0f));
+                buf[2] = (byte)(value & 0xff);
+                break;
+            case CONTRAST:
+                buf[0] = (byte)(buf[0] & 0x0f);
+                buf[0] = (byte)(buf[0] | ((value >> 4) & 0xf0));
+                buf[1] = (byte)(value & 0xff);
+                break;
+            case SATURATION:
+                buf[0] = (byte)(value >> 8);
+                buf[1] = (byte)(value & 0xff);
+                break;
+            case HUE:
+                if (value > 0) {
+                    buf[0] = (byte)(0x92 + value >> 8);
+                    buf[1] = (byte)(value & 0xff);
+                } else {
+                    buf[0] = (byte)(0x82 + -value >> 8);
+                    buf[1] = (byte)(-value & 0xff);
+                }
+                break;
+            case SHARPNESS:
+                buf[0] = 0;
+                buf[1] = (byte)(value);
+                break;
+            default:
+                return false;
+        }
+
+        ret = settingsTransfer(buf, setting.getRegisterIndex(), buf.length);
+        return ret >= 0;
     }
 
-    public boolean setTvNormNtsc() {
-        return sendControlTransferPacket(NTSC_CTRL);
+    public int getColorValue(ColorSetting setting) {
+        int value;
+        int ret;
+        byte[] buf;
+        if (setting == ColorSetting.CONTRAST || setting == ColorSetting.BRIGHTNESS) {
+            buf = new byte[3];
+        } else {
+            buf = new byte[2];
+        }
+
+        ret = settingsTransfer(buf, setting.getRegisterIndex(), buf.length);
+        if (ret < 0) {
+            Timber.i("Failed to retreive setting");
+            return -1;
+        }
+
+        switch (setting) {
+            case BRIGHTNESS:
+                value = buf[2] & 0xFF;
+                value = value | ((buf[0] & 0x0f) << 8);
+                break;
+            case CONTRAST:
+                value = buf[1] & 0xFF;
+                break;
+            case SATURATION:
+                value = buf[1] & 0xFF;
+                break;
+            case HUE:
+                // TODO: doesnt seem to be a good way of getting this
+                value = buf[1] & 0xFF;
+                break;
+            case SHARPNESS:
+                value = buf[1] & 0xFF;
+                break;
+            default:
+                return -1;
+        }
+
+        return value;
     }
 
     public boolean startAudio() {
@@ -248,7 +377,7 @@ public class UsbtvControl {
         for (ControlTransferPair pair : packet) {
             ret = mUsbtvConnection.controlTransfer(
                     UsbConstants.USB_TYPE_VENDOR,
-                    USBTV_CONTROL_SEND_REGISTER,
+                    USBTV_REQUEST_REGISTER,
                     pair.getValue(),
                     pair.getIndex(),
                     null, 0, 0);
@@ -258,6 +387,18 @@ public class UsbtvControl {
             }
         }
         return true;
+    }
+
+    private int settingsTransfer(@NonNull byte[] buf, int index, int length) {
+        if (length < 0 || length > buf.length) {
+            return -1;
+        }
+
+        return mUsbtvConnection.controlTransfer(
+                UsbConstants.USB_TYPE_VENDOR,
+                USBTV_CONTROL_REGISTER,
+                0, index, buf, length, 0);
+
     }
 
 

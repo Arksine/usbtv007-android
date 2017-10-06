@@ -1,1 +1,1 @@
-include ':exampleapp', ':libusbtv'
+include ':libusbtv', ':exampleapp'

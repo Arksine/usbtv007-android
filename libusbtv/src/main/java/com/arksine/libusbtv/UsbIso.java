@@ -337,6 +337,15 @@ public class Request {
 
       return buffer.getByteBuffer(packetNo * maxPacketSize, len);
    }
+
+   public UsbTvPacket getTvPacket(int packetNo) {
+      if (packetNo < 0 || packetNo >= maxPacketsPerRequest) {
+         throw new IllegalArgumentException();
+      }
+
+      return new UsbTvPacket(buffer.getPointer(packetNo * maxPacketSize),
+              urb.getPacketActualLength(packetNo));
+   }
 }
 
 

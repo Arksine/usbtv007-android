@@ -1,4 +1,4 @@
-package com.arksine.usbtv007;
+package com.arksine.exampleapp;
 
 import org.junit.Test;
 
