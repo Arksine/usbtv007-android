@@ -89,6 +89,7 @@ public class UsbTv {
                             if (dev.equals(mUsbtvDevice)) {
                                 if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
                                     if (!mIsOpen.get()) {
+                                        mHasUsbPermission = true;
                                         initDevice();
                                     } else {
                                         Timber.i("Device is already open");
@@ -314,6 +315,14 @@ public class UsbTv {
                             return;
                         }
 
+                        // TODO: attempting to start/stop audio for debug purposes
+                        /*success = mUsbtvControl.startAudio();
+                        if (!success) {
+                            Timber.e("Error initializing audio stream");
+                            return;
+                        }*/
+
+
                         success = mUsbtvControl.initializeVideo();
                         if (!success) {
                             Timber.e("Error initializing video stream");
@@ -404,6 +413,13 @@ public class UsbTv {
                 } catch (IOException e) {
                     Timber.i(e);
                 }
+
+                // TODO: attempting to start/stop audio for debug purposes
+                /*int success = mUsbtvControl.stopAudio();
+                if (!success) {
+                    Timber.e("Error stopping audio stream");
+                    return;
+                }*/
             }
         }
     }
