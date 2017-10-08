@@ -360,9 +360,6 @@ public class UsbTv {
                                 mFrameInfo, mDrawingSurface);
                         mFrameProcessor.setRawFrameCallback(mRawFrameCallback);
 
-
-                        mIsonchronousManager.preallocateRequests(MAX_ISO_TRANSFERS);
-
                         try {
                             mIsonchronousManager.setInterface(0, 1);
                         } catch (IOException e) {
@@ -370,11 +367,7 @@ public class UsbTv {
                             success = false;
                         }
 
-                        if (!success) {
-                            Timber.e("Error setting interface to alternate setting 1");
-                            return;
-                        }
-
+                        mIsonchronousManager.preallocateRequests(MAX_ISO_TRANSFERS);
                         // Allocate, Initialize and Submit Iso requests/urbs
                         for (int i = 0; i < MAX_ISO_TRANSFERS; i++) {
                             UsbIso.Request req = mIsonchronousManager.getRequest();
@@ -388,7 +381,6 @@ public class UsbTv {
                             }
                         }
 
-
                         if (!success) {
                             Timber.e("Error initializing usb isonchronous requests/urbs");
                             try {
@@ -398,6 +390,12 @@ public class UsbTv {
                             }
                             return;
                         }
+
+                        if (!success) {
+                            Timber.e("Error setting interface to alternate setting 1");
+                            return;
+                        }
+
 
                         mFrameProcessor.start();
                         mIsStreaming.set(true);

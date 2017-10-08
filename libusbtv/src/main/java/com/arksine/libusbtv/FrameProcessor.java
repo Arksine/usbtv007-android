@@ -37,8 +37,8 @@ public class FrameProcessor extends Thread {
     private UsbTvFrame mCurrentFrame = null;
     private FrameInfo mFrameInfo;
 
-    // Packet Input Buffer, size = packetsize * packets_per_frame * 10frames
     private byte[] mPacketBuffer;
+    private long mProfileTime;
 
 
     // Variables for tracking frame data
@@ -52,7 +52,6 @@ public class FrameProcessor extends Thread {
 
     // Render Variables
     private Surface mDrawingSurface = null;
-    private Handler mPacketHandler = null;
     private Handler mRenderHandler = null;
     private AtomicBoolean mRsInitialized = new AtomicBoolean(false);
     private RenderScript mRs;
@@ -79,15 +78,11 @@ public class FrameProcessor extends Thread {
         mFramePool = new InputFramePool(mFrameInfo, 4);  // 4 buffers should be enough
         mCurrentFrame = mFramePool.getInputBuffer(drawingSurface != null);
 
-        HandlerThread packetHandlerThread = new HandlerThread("PacketHandlerThread",
-                Process.THREAD_PRIORITY_DISPLAY);
-        packetHandlerThread.start();
-        mPacketHandler = new Handler(packetHandlerThread.getLooper(), mPacketHandlerCallback);
-
         // Frames are received as fields (odd first).  We only process one field at a time,
         // so the number of fields is divided in half
         mPacketsPerField = mFrameInfo.getFrameSizeInBytes() / 2 / USBTV_PAYLOAD_SIZE;
-        mPacketBuffer = new byte[3072];  // Temp
+        mPacketBuffer = new byte[3072];  // TODO: the packet size is temporary, I should get it
+                                        // from the UsbTv class which calculates it from the endpoint
 
 
         setDrawingSurface(drawingSurface);
@@ -112,6 +107,7 @@ public class FrameProcessor extends Thread {
 
     @Override
     public void run() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY);
         mIsStreaming.set(true);
         while (mIsStreaming.get()) {
             try {
@@ -119,6 +115,7 @@ public class FrameProcessor extends Thread {
 
                 int numPackets = req.getPacketCount();
                 for (int i = 0; i < numPackets; i++) {
+                    mProfileTime = System.nanoTime();
                     int status = req.getPacketStatus(i);
                     if (status != 0) {
                         Timber.v("Invalid packet received, status: %d", status);
@@ -131,10 +128,11 @@ public class FrameProcessor extends Thread {
 
                     // Get packet and send it for processing
                     if (packetlength > 0) {
-                        byte[] packetBuf = new byte[packetlength];
-                        req.getPacketData(i, packetBuf, packetlength);
-                        Message msg = mPacketHandler.obtainMessage(0, packetBuf);
-                        mPacketHandler.sendMessage(msg);
+                        req.getPacketData(i, mPacketBuffer, packetlength);
+                        int count = packetlength / USBTV_PACKET_SIZE;
+                        for (int j = 0; j < count; j++) {
+                            processPacket(mPacketBuffer, j * USBTV_PACKET_SIZE);
+                        }
                     }
                 }
 
@@ -165,25 +163,29 @@ public class FrameProcessor extends Thread {
             int packetNumber = getPacketNo(packet, startIndex + 2);
 
             if (DEBUG) {
-                if (mExpectedId == -1) {
-                    mExpectedId = id;
-                    mExpectedPacket = 0;
-                } else if(mExpectedId != id) {
+                if(mExpectedId != id) {
                     Timber.d("Frame id: %d\n" +
-                            "Packets dropped: %d",
-                            mExpectedId, 360 - packetNumber);
+                            "Packets dropped: %d\n" +
+                                    "Time MicroSeconds: %d",
+                            mExpectedId,
+                            360 - packetNumber,
+                            (System.nanoTime() - mProfileTime)/1000);
                     mExpectedId = id;
                 }
 
                 if (mExpectedPacket != packetNumber) {
                     Timber.d("Frame id: %d\n" +
-                             "Packets dropped: %d",
-                            mExpectedId, packetNumber - mExpectedPacket);
+                             "Packets dropped: %d\n" +
+                                    "Time MicroSeconds: %d",
+                            mExpectedId,
+                            packetNumber - mExpectedPacket,
+                            (System.nanoTime() - mProfileTime)/1000);
                     mExpectedPacket = packetNumber;
                 }
 
                 if (packetNumber == 359) {
-                    mExpectedId = -1;
+                    mExpectedId++;
+                    mExpectedPacket = 0;
                 } else {
                     mExpectedPacket++;
                 }
@@ -267,7 +269,7 @@ public class FrameProcessor extends Thread {
 
             }
         } else {
-            Timber.d("Invalid Packet Header");
+         //   Timber.d("Invalid Packet Header");
         }
     }
 
@@ -377,18 +379,6 @@ public class FrameProcessor extends Thread {
 
         mCurrentFrame = mFramePool.getInputBuffer(mDrawingSurface != null);
     }
-
-    private final Handler.Callback mPacketHandlerCallback = new Handler.Callback() {
-        @Override
-        public boolean handleMessage(Message message) {
-            byte[] packet = (byte[]) message.obj;
-            int count = packet.length / USBTV_PACKET_SIZE;
-            for (int i = 0; i < count; i++) {
-                processPacket(packet, i * USBTV_PACKET_SIZE);
-            }
-            return true;
-        }
-    };
 
     private final Handler.Callback mRenderHandlerCallback = new Handler.Callback() {
         @Override
