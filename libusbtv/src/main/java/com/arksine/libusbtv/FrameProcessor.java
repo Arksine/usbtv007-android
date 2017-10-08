@@ -10,10 +10,6 @@ import android.renderscript.Element;
 import android.renderscript.RenderScript;
 import android.view.Surface;
 
-import com.sun.jna.Pointer;
-
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import timber.log.Timber;
@@ -23,10 +19,10 @@ import timber.log.Timber;
  * sends back to the user or renders them to a surface
  */
 
-// TODO: need a handler to render frames.  This handler will copy raw buffer to input allocation
-    // excute the kernel, then call iosend on the output allocation; Do I need to syncall on it as well?
 
 public class FrameProcessor extends Thread {
+    private static final boolean DEBUG = true;
+
     private static final int USBTV_PACKET_SIZE = 1024;       // Packet size in bytes
     private static final int USBTV_PAYLOAD_SIZE = 960;       // Size of payload portion
     private static final int USBTV_VIDEO_ENDPOINT = 0x81;
@@ -41,17 +37,22 @@ public class FrameProcessor extends Thread {
     private UsbTvFrame mCurrentFrame = null;
     private FrameInfo mFrameInfo;
 
+    // Packet Input Buffer, size = packetsize * packets_per_frame * 10frames
+    private byte[] mPacketBuffer;
+
+
     // Variables for tracking frame data
-    private byte[] mHeader;
     private boolean mIsSecondField = false;
     private int mPacketsPerField;
     private int mPacketsProcessed;
-    private int mExpectedPacketNumber;
-    private boolean mExpectedFieldOdd;
+
+    // Debug Variables
+    private int mExpectedId = -1;
+    private int mExpectedPacket = 0;
 
     // Render Variables
     private Surface mDrawingSurface = null;
-    private Handler mParseHandler = null;
+    private Handler mPacketHandler = null;
     private Handler mRenderHandler = null;
     private AtomicBoolean mRsInitialized = new AtomicBoolean(false);
     private RenderScript mRs;
@@ -59,8 +60,6 @@ public class FrameProcessor extends Thread {
     private Allocation mOutputFrameAlloc;
     private ScriptC_ConvertYUYV mConvertKernel;
 
-    // Debug
-    private boolean mDebugFirst = true;
 
     // TODO:  Base logic seems correct, however it appears that I am constantly dropping packets.
     // Is UsbIso just too slow?  Am I taking too long processing a packet between requests, causing
@@ -80,12 +79,16 @@ public class FrameProcessor extends Thread {
         mFramePool = new InputFramePool(mFrameInfo, 4);  // 4 buffers should be enough
         mCurrentFrame = mFramePool.getInputBuffer(drawingSurface != null);
 
+        HandlerThread packetHandlerThread = new HandlerThread("PacketHandlerThread",
+                Process.THREAD_PRIORITY_DISPLAY);
+        packetHandlerThread.start();
+        mPacketHandler = new Handler(packetHandlerThread.getLooper(), mPacketHandlerCallback);
+
         // Frames are received as fields (odd first).  We only process one field at a time,
         // so the number of fields is divided in half
         mPacketsPerField = mFrameInfo.getFrameSizeInBytes() / 2 / USBTV_PAYLOAD_SIZE;
-        mHeader = new byte[4];
-        mExpectedFieldOdd = true;
-        mExpectedPacketNumber = 0;
+        mPacketBuffer = new byte[3072];  // Temp
+
 
         setDrawingSurface(drawingSurface);
     }
@@ -128,22 +131,11 @@ public class FrameProcessor extends Thread {
 
                     // Get packet and send it for processing
                     if (packetlength > 0) {
-                        ByteBuffer packet = req.getPacketDataAsByteBuffer(i, packetlength);
-                        if (mDebugFirst) {
-                            Timber.d("Packet Length: %d", packetlength);
-                            Timber.d("Byte Buffer Order: %s", packet.order().toString());
-                            Timber.d("Byte Buffer Postion: %d", packet.position());
-                            Timber.d("Byte Buffer Limit: %d", packet.limit());
-                            // TODO: get other debug data
-                        }
-                        int packetCount = packetlength / USBTV_PACKET_SIZE;
-                        for (int j = 0; j < packetCount; j++) {
-                            packet.position(j * USBTV_PACKET_SIZE);
-                            processPacket(packet);
-                        }
-                    }// else {
-                    //    Timber.d("Empty packet Recd");
-                   // }
+                        byte[] packetBuf = new byte[packetlength];
+                        req.getPacketData(i, packetBuf, packetlength);
+                        Message msg = mPacketHandler.obtainMessage(0, packetBuf);
+                        mPacketHandler.sendMessage(msg);
+                    }
                 }
 
                 req.initialize(USBTV_VIDEO_ENDPOINT);
@@ -155,12 +147,7 @@ public class FrameProcessor extends Thread {
     }
 
 
-    private void processPacket(ByteBuffer packet) {
-        packet.get(mHeader);
-
-        if (mDebugFirst) {
-            Timber.d("Got Packet Header");
-        }
+    private void processPacket(byte[] packet, int startIndex) {
 
         if (mCurrentFrame == null) {
             // Current working frame not set, attempt to retrieve one from the pool
@@ -172,32 +159,39 @@ public class FrameProcessor extends Thread {
             }
         }
 
-        if (frameCheck(mHeader)) {
-            int id = getFrameId(mHeader);
-            boolean isFieldOdd = isPacketOdd(mHeader) != 0;
-            int packetNumber = getPacketNumber(mHeader);
+        if (frameCheck(packet[startIndex])) {
+            int id = getFrameId(packet[startIndex + 1]);
+            boolean isFieldOdd = getPacketOdd(packet[startIndex + 2]) != 0;
+            int packetNumber = getPacketNo(packet, startIndex + 2);
 
-            if (mDebugFirst) {
-                mDebugFirst = false;
-                Timber.d("Frame Id: %d", id);
-                Timber.d("Is Field Odd: %b", isFieldOdd);
-                Timber.d("Packet Number: %d", packetNumber);
+            if (DEBUG) {
+                if (mExpectedId == -1) {
+                    mExpectedId = id;
+                    mExpectedPacket = 0;
+                } else if(mExpectedId != id) {
+                    Timber.d("Frame id: %d\n" +
+                            "Packets dropped: %d",
+                            mExpectedId, 360 - packetNumber);
+                    mExpectedId = id;
+                }
+
+                if (mExpectedPacket != packetNumber) {
+                    Timber.d("Frame id: %d\n" +
+                             "Packets dropped: %d",
+                            mExpectedId, packetNumber - mExpectedPacket);
+                    mExpectedPacket = packetNumber;
+                }
+
+                if (packetNumber == 359) {
+                    mExpectedId = -1;
+                } else {
+                    mExpectedPacket++;
+                }
+                return;
             }
 
             if (packetNumber >= mPacketsPerField) {
                 Timber.d("Packet number exceeds maximum packets per Field");
-                Timber.d("Frame Id: %d", id);
-                Timber.d("Is Field Odd: %b", isFieldOdd);
-                Timber.d("Packet Number: %d", packetNumber);
-                return;
-            } else if (mExpectedPacketNumber != packetNumber) {
-                Timber.d("Unexpected packet number received, Expected: %d", mExpectedPacketNumber);
-                Timber.d("Frame Id: %d", id);
-                Timber.d("Is Field Odd: %b", isFieldOdd);
-                Timber.d("Packet Number: %d", packetNumber);
-                return;
-            } else if (mExpectedFieldOdd != isFieldOdd) {
-                Timber.d("Unexpected Field Received");
                 Timber.d("Frame Id: %d", id);
                 Timber.d("Is Field Odd: %b", isFieldOdd);
                 Timber.d("Packet Number: %d", packetNumber);
@@ -216,17 +210,17 @@ public class FrameProcessor extends Thread {
             // Copy data to buffer in current tvFrame
             switch (mCurrentFrame.getScanType()) {
                 case PROGRESSIVE_60: {
-                    writeProgressiveBuf(packetNumber, packet);
+                    writeProgressiveBuf(packetNumber, packet, startIndex + 4);
                     break;
                 }
                 case PROGRESIVE_30: {
                     if (isFieldOdd) {
-                        writeProgressiveBuf(packetNumber, packet);
+                        writeProgressiveBuf(packetNumber, packet, startIndex + 4);
                     }
                     break;
                 }
                 case INTERLEAVED: {
-                    writeInterleavedBuf(packetNumber, packet, isFieldOdd);
+                    writeInterleavedBuf(packetNumber, packet, startIndex + 4, isFieldOdd);
                     break;
                 }
                 default:
@@ -235,13 +229,11 @@ public class FrameProcessor extends Thread {
 
             // if callback is provided
             mPacketsProcessed++;
-            mExpectedPacketNumber++;
 
             // All parts of a field have been received
             if (packetNumber == (mPacketsPerField - 1)) {
                 if (mPacketsProcessed != mPacketsPerField) {
                     Timber.d("Fewer Packets processed than packets per field");
-                    return;
                     // TODO: Frame error.  Should create a flag in usbtvframe
                     // show the error rather than returning?
                 }
@@ -273,8 +265,6 @@ public class FrameProcessor extends Thread {
                         break;
                 }
 
-                mExpectedPacketNumber = 0;
-                mExpectedFieldOdd = !mExpectedFieldOdd;
             }
         } else {
             Timber.d("Invalid Packet Header");
@@ -323,10 +313,10 @@ public class FrameProcessor extends Thread {
      * @param packetNo  The number identifying the packet (range 0 - 359)
      * @param packet ByteBuffer representing the incoming usb packet
      */
-    private void writeProgressiveBuf(int packetNo, ByteBuffer packet) {
+    private void writeProgressiveBuf(int packetNo, byte[] packet, int payloadIndex) {
         int bufferOffset = packetNo * USBTV_PAYLOAD_SIZE;
         byte[] buf = mCurrentFrame.getFrameBuf();
-        packet.get(buf, bufferOffset, USBTV_PAYLOAD_SIZE);
+        System.arraycopy(packet, payloadIndex, buf, bufferOffset, USBTV_PAYLOAD_SIZE);
     }
 
     /**
@@ -338,7 +328,7 @@ public class FrameProcessor extends Thread {
      * @param packet ByteBuffer representing the incoming usb packet
      * @param isOdd Identifies whether the current packet contains an odd or even field
      */
-    private void writeInterleavedBuf(int packetNo, ByteBuffer packet, boolean isOdd) {
+    private void writeInterleavedBuf(int packetNo, byte[] packet,int payloadIndex, boolean isOdd) {
         int packetHalf ;
         int halfPayloadSize = USBTV_PAYLOAD_SIZE / 2;
         int oddFieldOffset = (isOdd) ? 0 : 1; // TODO: shouldn't odd lines be written to odd lines in the buffer?
@@ -362,7 +352,7 @@ public class FrameProcessor extends Thread {
             // packetNumber MOD 3 == 1 - offset half of a packet payload
             int bufferOffset = (lineIndex * lineSize) + (halfPayloadSize * (packetNo % 3));
 
-            packet.get(buf, bufferOffset, halfPayloadSize);
+            System.arraycopy(packet, payloadIndex, buf, bufferOffset, halfPayloadSize);
         }
     }
 
@@ -387,6 +377,18 @@ public class FrameProcessor extends Thread {
 
         mCurrentFrame = mFramePool.getInputBuffer(mDrawingSurface != null);
     }
+
+    private final Handler.Callback mPacketHandlerCallback = new Handler.Callback() {
+        @Override
+        public boolean handleMessage(Message message) {
+            byte[] packet = (byte[]) message.obj;
+            int count = packet.length / USBTV_PACKET_SIZE;
+            for (int i = 0; i < count; i++) {
+                processPacket(packet, i * USBTV_PACKET_SIZE);
+            }
+            return true;
+        }
+    };
 
     private final Handler.Callback mRenderHandlerCallback = new Handler.Callback() {
         @Override
@@ -415,22 +417,21 @@ public class FrameProcessor extends Thread {
         }
     };
 
-    private static boolean frameCheck(byte[] header) {
-        return (header[0] == (byte)0x88);
+    private static boolean frameCheck(byte checkByte) {
+        return (checkByte == (byte)0x88);
     }
 
-    private static int getFrameId(byte[] header) {
-        return (header[1] & 0xff);
+    private static int getFrameId(byte idByte) {
+        return (idByte & 0xff);
     }
 
-    private static int isPacketOdd(byte[] header) {
-        return ((header[2] & 0xf0) >> 7);
+    private static int getPacketOdd(byte oddByte) {
+        return ((oddByte & 0xf0) >> 7);
     }
 
-    private static int getPacketNumber (byte[] header) {
-        int num = (header[3] & 0xff);
-        num |= ((header[2] & 0x0f) << 8);
+    private static int getPacketNo (byte[] packet, int start) {
+        int num = (packet[start + 1] & 0xff);
+        num |= ((packet[start] & 0x0f) << 8);
         return num;
     }
-
 }

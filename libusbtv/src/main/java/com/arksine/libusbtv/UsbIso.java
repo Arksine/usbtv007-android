@@ -324,6 +324,19 @@ public class Request {
 
 
    /**
+    * Retreives Packet data, but reads it into a buffer at a specified offset
+    * @param packetNo
+    * @param buf
+    * @param offset
+    * @param len
+    */
+   public void getPacketData (int packetNo, byte[] buf, int offset, int len) {
+      if (packetNo < 0 || packetNo >= maxPacketsPerRequest || len > maxPacketSize) {
+         throw new IllegalArgumentException(); }
+      buffer.read(packetNo * maxPacketSize, buf, offset, len); }
+
+
+   /**
     * Retreives data received from the device, however returns it as a direct
     * byte buffer.  This allows the user to parse the data without multiple
     * array copies.
@@ -338,14 +351,6 @@ public class Request {
       return buffer.getByteBuffer(packetNo * maxPacketSize, len);
    }
 
-   public UsbTvPacket getTvPacket(int packetNo) {
-      if (packetNo < 0 || packetNo >= maxPacketsPerRequest) {
-         throw new IllegalArgumentException();
-      }
-
-      return new UsbTvPacket(buffer.getPointer(packetNo * maxPacketSize),
-              urb.getPacketActualLength(packetNo));
-   }
 }
 
 

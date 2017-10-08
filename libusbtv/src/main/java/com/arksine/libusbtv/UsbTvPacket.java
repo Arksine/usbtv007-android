@@ -1,7 +1,5 @@
 package com.arksine.libusbtv;
 
-import com.sun.jna.Pointer;
-
 
 /**
  * Created by Eric on 10/4/2017.
@@ -10,47 +8,84 @@ import com.sun.jna.Pointer;
 class UsbTvPacket {
     private static final int USBTV_PACKET_SIZE = 1024;       // Packet size in bytes
 
-    final private Pointer mPacketAddress;
-    final private int mPacketSize;
+    final private byte[] mPacketBuffer;
     final private int mNumSubFrames;
 
-    public UsbTvPacket(Pointer address, int size) {
-        mPacketAddress = address;
-        mPacketSize = size;
-        mNumSubFrames = mPacketSize / USBTV_PACKET_SIZE;
+    public UsbTvPacket(byte[] packetBuf) {
+        mPacketBuffer = packetBuf;
+        mNumSubFrames = mPacketBuffer.length / USBTV_PACKET_SIZE;
     }
 
     public int getNumberOfFrames() {
         return mNumSubFrames;
     }
 
-    public int getPacketHeader(int subframeIndex) {
-
-        if (subframeIndex >= mNumSubFrames || subframeIndex < 0) {
+    public boolean isPacketValid(int subPacketIndex) {
+        /*if (subPacketIndex >= mNumSubFrames || subPacketIndex < 0) {
             // TODO: Throw exception
 
-        }
-        byte[] intBuf = new byte[4];
-        mPacketAddress.read((subframeIndex * USBTV_PACKET_SIZE), intBuf, 0, 4);
-        return beByteArrayToInt(intBuf);
+        }*/
+
+        int index = subPacketIndex * USBTV_PACKET_SIZE;
+        return frameCheck(mPacketBuffer[index]);
     }
 
-    public Pointer getPayloadPointer(int subframeIndex) {
-        if (subframeIndex >= mNumSubFrames || subframeIndex < 0) {
+
+
+    public int getFrameNumber(int subPacketIndex) {
+        /*if (subPacketIndex >= mNumSubFrames || subPacketIndex < 0) {
             // TODO: Throw exception
 
-        }
+        }*/
 
-        return mPacketAddress.getPointer((subframeIndex * USBTV_PACKET_SIZE) + 4);
+
+        int index = subPacketIndex * USBTV_PACKET_SIZE + 1;
+        return getFrameId(mPacketBuffer[index]);
     }
 
-    private static int beByteArrayToInt(byte[] data) {
-        int value = data[0] << 24;
-        value |= (data[1] & 0xFF) << 16;
-        value |= (data[2] & 0xFF) << 8;
-        value |= (data[3] & 0xFF);
+    public int getPacketNumber(int subPacketIndex) {
+        /*if (subPacketIndex >= mNumSubFrames || subPacketIndex < 0) {
+            // TODO: Throw exception
 
-        return value;
+        }*/
+
+        int index = subPacketIndex * USBTV_PACKET_SIZE + 2;
+        return getPacketNo(mPacketBuffer, index);
     }
+
+    public boolean isPacketOdd(int subPacketIndex) {
+        /*if (subPacketIndex >= mNumSubFrames || subPacketIndex < 0) {
+            // TODO: Throw exception
+
+        }*/
+
+        int index = subPacketIndex * USBTV_PACKET_SIZE + 2;
+        return getPacketOdd(mPacketBuffer[index]) != 0;
+
+    }
+
+    public void copyPayloadToFrame(int subPacketIndex, byte[] destBuf, int frameBufOffset, int length) {
+        int srcStart = subPacketIndex * USBTV_PACKET_SIZE + 4;
+        System.arraycopy(mPacketBuffer, srcStart, destBuf, frameBufOffset, length);
+    }
+
+    private static boolean frameCheck(byte checkByte) {
+        return (checkByte == (byte)0x88);
+    }
+
+    private static int getFrameId(byte idByte) {
+        return (idByte & 0xff);
+    }
+
+    private static int getPacketOdd(byte oddByte) {
+        return ((oddByte & 0xf0) >> 7);
+    }
+
+    private static int getPacketNo (byte[] packet, int start) {
+        int num = (packet[start + 1] & 0xff);
+        num |= ((packet[start] & 0x0f) << 8);
+        return num;
+    }
+
 
 }

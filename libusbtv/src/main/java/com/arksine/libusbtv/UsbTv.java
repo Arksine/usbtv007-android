@@ -22,6 +22,21 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import timber.log.Timber;
 
+
+// TODO: Either the JVM is too slow or UsbIso is bugged.  All tests are dropping packets, some
+// implementations drop more packets than others.  None seem to get All packets, or even enough
+// to make a frame.  It seems the only way to do this properly will be to use libusb and do it in
+// native code.
+
+/*
+ * TODO: Update 10/8/2017 - The issue is almost certainly that the ART runtime is too slow
+ * The UsbTv capture device sends roughly 225 packets of 3072 bytes.  That translates
+ * to having 148 microseconds to process a packet.  The UsbIso class shows a similar value for UVC.
+ * Memory allocation and array copies take time.  I'm not sure I can accomplish this in
+ * the allotted time.
+ */
+
+
 /**
  * UsbTv class.  Handles user interface for managing the usb driver
  */
@@ -341,6 +356,13 @@ public class UsbTv {
                             return;
                         }
 
+                        mFrameProcessor = new FrameProcessor(mContext, mIsonchronousManager,
+                                mFrameInfo, mDrawingSurface);
+                        mFrameProcessor.setRawFrameCallback(mRawFrameCallback);
+
+
+                        mIsonchronousManager.preallocateRequests(MAX_ISO_TRANSFERS);
+
                         try {
                             mIsonchronousManager.setInterface(0, 1);
                         } catch (IOException e) {
@@ -354,7 +376,6 @@ public class UsbTv {
                         }
 
                         // Allocate, Initialize and Submit Iso requests/urbs
-                        mIsonchronousManager.preallocateRequests(MAX_ISO_TRANSFERS);
                         for (int i = 0; i < MAX_ISO_TRANSFERS; i++) {
                             UsbIso.Request req = mIsonchronousManager.getRequest();
                             req.initialize(USBTV_VIDEO_ENDPOINT);
@@ -367,6 +388,7 @@ public class UsbTv {
                             }
                         }
 
+
                         if (!success) {
                             Timber.e("Error initializing usb isonchronous requests/urbs");
                             try {
@@ -377,11 +399,9 @@ public class UsbTv {
                             return;
                         }
 
-                        mIsStreaming.set(true);
-                        mFrameProcessor = new FrameProcessor(mContext, mIsonchronousManager,
-                                mFrameInfo, mDrawingSurface);
-                        mFrameProcessor.setRawFrameCallback(mRawFrameCallback);
                         mFrameProcessor.start();
+                        mIsStreaming.set(true);
+
                     }
                 }
             }
@@ -415,8 +435,7 @@ public class UsbTv {
                 }
 
                 // TODO: attempting to start/stop audio for debug purposes
-                /*int success = mUsbtvControl.stopAudio();
-                if (!success) {
+                /*if (mUsbtvControl.stopAudio()) {
                     Timber.e("Error stopping audio stream");
                     return;
                 }*/
