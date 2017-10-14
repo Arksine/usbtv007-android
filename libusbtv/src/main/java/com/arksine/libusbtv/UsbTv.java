@@ -5,17 +5,18 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.graphics.ImageFormat;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbEndpoint;
 import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
 import android.os.Build;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.Message;
 import android.support.annotation.NonNull;
 import android.view.Surface;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -23,18 +24,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import timber.log.Timber;
 
 
-// TODO: Either the JVM is too slow or UsbIso is bugged.  All tests are dropping packets, some
-// implementations drop more packets than others.  None seem to get All packets, or even enough
-// to make a frame.  It seems the only way to do this properly will be to use libusb and do it in
-// native code.
-
-/*
- * TODO: Update 10/8/2017 - The issue is almost certainly that the ART runtime is too slow
- * The UsbTv capture device sends roughly 225 packets of 3072 bytes.  That translates
- * to having 148 microseconds to process a packet.  The UsbIso class shows a similar value for UVC.
- * Memory allocation and array copies take time.  I'm not sure I can accomplish this in
- * the allotted time.
- */
+// TODO:10/10/2017 Delete all local Usb functionality (outside of permission and open).  Create
+// Native functions to communicate with JNI.  Use a handler with a seperate handler thread
+// to call all Native Functions, as some of them may block.  It also makes sure that
+// all calls happen from the same java thread, preventing any threading issues with the native code.
+// Allowing the threads to block in native code also allows me to return a value and execute
+// a Callback in the handler thread (such as onOpen, onConnected, onError, etc)
 
 
 /**
@@ -45,20 +40,53 @@ public class UsbTv {
     public static final boolean DEBUG = true;  // TODO: set to false for release
 
     public interface DriverCallbacks {
-        void onOpen(boolean status);
+        void onOpen(IUsbTvDriver driver, boolean status);
         void onClose();
+        void onError();
     }
 
-    public interface RawFrameCallback {
-        void onRawFrameReceived(UsbTvFrame frame);
+    public interface FrameCallback {
+        void onFrameReceived(UsbTvFrame frame);
     }
 
     public enum TvNorm {NTSC, PAL}
     public enum InputSelection {COMPOSITE, SVIDEO}
-    public enum ScanType {PROGRESSIVE_60, PROGRESIVE_30, INTERLEAVED}
+    public enum ScanType {PROGRESSIVE, DISCARD, INTERLEAVED}
+    public enum ColorControl {
+        BRIGHTNESS,
+        CONTRAST,
+        SATURATION,
+        HUE,
+        SHARPNESS
+    }
 
-    private final Object DEV_LOCK = new Object();
-    private final Object STREAM_LOCK = new Object();
+    private enum NativeAction {
+        NONE,
+        OPEN_DEVICE,
+        CLOSE_DEVICE,
+        START_STREAMING,
+        STOP_STREAMING,
+        SET_INPUT,
+        SET_NORM,
+        SET_SCANTYPE,
+        SET_CONTROL,
+        SET_SURFACE,
+        SET_CALLBACK;
+
+        private static final NativeAction[] ACTION_ARRAY = NativeAction.values();
+
+        public static NativeAction fromOrdinal(int ordinal) {
+            if (ordinal >=0 && ordinal < ACTION_ARRAY.length) {
+                return ACTION_ARRAY[ordinal];
+            } else {
+                return NONE;
+            }
+        }
+    }
+
+    // TODO: Need Enums for Error
+
+    private static final Object OPEN_LOCK = new Object();
     private static final String ACTION_USB_PERMISSION = "com.arksine.usbtv.USB_PERMISSION";
     private static final String ACTION_USB_ATTACHED = "android.hardware.usb.action.USB_DEVICE_ATTACHED";
     private static final String ACTION_USB_DETACHED = "android.hardware.usb.action.USB_DEVICE_DETACHED";
@@ -69,21 +97,6 @@ public class UsbTv {
     private static final int USBTV_VIDEO_ENDPOINT = 0x81;
     private static final int USBTV_AUDIO_ENDPOINT = 0x83;
 
-
-    /**
-     * Video Constants
-     */
-    private static final int MAX_ISO_TRANSFERS = 16;
-    private static final int MAX_ISO_PACKETS = 8;
-
-
-    /**
-     * Audio Constatants
-     */
-    private static final int USBTV_AUDIO_PAYLOAD_SIZE = 20480;
-    private static final int USBTV_AUDIO_HDR_SIZE = 4;
-    private static final int USBTV_AUDIO_BUFFER_SIZE = 65536;
-
     /**
      * Endpoint Size Constants
      */
@@ -91,8 +104,8 @@ public class UsbTv {
     private static final int USB_EP_MULT_SHIFT = 11;
     private static final int USB_EP_MULT_MASK = 3 << USB_EP_MULT_SHIFT;
 
-    private boolean mUsbReceiverRegistered = false;
-    private final BroadcastReceiver mUsbReceiver = new BroadcastReceiver() {
+    private static boolean mUsbReceiverRegistered = false;
+    private static final BroadcastReceiver mUsbReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             String action = intent.getAction();
@@ -100,21 +113,31 @@ public class UsbTv {
                 case ACTION_USB_PERMISSION: {
                     UsbDevice dev = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
                     if (dev != null) {
-                        synchronized (DEV_LOCK) {
-                            if (dev.equals(mUsbtvDevice)) {
-                                if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
-                                    if (!mIsOpen.get()) {
-                                        mHasUsbPermission = true;
-                                        initDevice();
+                        synchronized (OPEN_LOCK) {
+                            for (UsbTv usbtv : mReferenceList) {
+                                if (dev.equals(usbtv.mUsbtvDevice)) {
+                                    if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+                                        if (!usbtv.mIsOpen.get()) {
+                                            usbtv.mHasUsbPermission = true;
+
+                                            // Since Initialization requires blocking calls
+                                            // to native code, the nativehandler takes care of it
+                                            Message msg = usbtv.mNativeHander.
+                                                    obtainMessage(NativeAction.OPEN_DEVICE.ordinal());
+                                            usbtv.mNativeHander.sendMessage(msg);
+                                        } else {
+                                            Timber.i("Device is already open");
+                                        }
                                     } else {
-                                        Timber.i("Device is already open");
+                                        // Permission denied
+                                        mReferenceList.remove(usbtv);
+                                        Timber.v("Cannot open device, permission denied");
                                     }
-                                } else {
-                                    Timber.v("Cannot open device, permission denied");
+                                    usbtv.mDriverCallbacks.onOpen(null, usbtv.mIsOpen.get());
+                                    return;
                                 }
                             }
                         }
-                        mDriverCallbacks.onOpen(mIsOpen.get());
                     }
                     break;
                 }
@@ -133,73 +156,92 @@ public class UsbTv {
     };
 
     private Context mContext;
-    private UsbIso mIsonchronousManager;
     private UsbDevice mUsbtvDevice;
     private UsbDeviceConnection mUsbtvConnection;
-    private UsbTvControl mUsbtvControl;
-    private FrameProcessor mFrameProcessor = null;
 
     private boolean mHasUsbPermission = false;
-    private boolean mUserManagedUsbEvents = false;
     private AtomicBoolean mIsOpen = new AtomicBoolean(false);
     private AtomicBoolean mIsStreaming = new AtomicBoolean(false);
 
     private InputSelection mInput;
-    private FrameInfo mFrameInfo;
+    private TvNorm mNorm;
+    private ScanType mScanType;
 
     private DriverCallbacks mDriverCallbacks;
-    private RawFrameCallback mRawFrameCallback = null;
+    private FrameCallback mFrameCallback = null;
     private Surface mDrawingSurface = null;
+    private Handler mNativeHander;
 
-    public UsbTv(@NonNull Context appContext, @NonNull DriverCallbacks driverCbs,
-                 boolean userManagedEvents) {
-        mContext = appContext;
-        mDriverCallbacks = driverCbs;
-        mUserManagedUsbEvents = userManagedEvents;
+    private static ArrayList<UsbTv> mReferenceList = new ArrayList<>();
 
-        // TODO: get from shared prefs?
-        mFrameInfo = new FrameInfo(ImageFormat.YUY2, ScanType.PROGRESSIVE_60, TvNorm.NTSC);
-        setTvNorm(TvNorm.NTSC);
-        setInput(InputSelection.COMPOSITE);
+    static {
+        System.loadLibrary("usbtv");
     }
 
-    public void setRawFrameCallback(RawFrameCallback cb) {
-        mRawFrameCallback = cb;
-        if (mFrameProcessor != null) {
-            mFrameProcessor.setRawFrameCallback(cb);
-        }
+    public static boolean open(@NonNull UsbDevice dev,@NonNull Context appContext,
+                               @NonNull DriverCallbacks cbs) {
+        return open(dev, appContext, cbs, false);
     }
 
-    public void setTvNorm(TvNorm norm) {
-        mFrameInfo = new FrameInfo(ImageFormat.YUY2, mFrameInfo.getScanType(), norm);
-        if (mIsStreaming.get()) {
-            stopStreaming();
-            startStreaming();
-        }
+    public static boolean open(@NonNull UsbDevice dev, @NonNull Context appContext,
+                               @NonNull DriverCallbacks cbs, boolean userManagedReceiver) {
+        synchronized (OPEN_LOCK) {
 
-    }
+            // Check to see if the received USB Device is already open
+            for (UsbTv usbtv : mReferenceList) {
+                if (dev.equals(usbtv.mUsbtvDevice)) {
+                    Timber.i("Instance containing UsbDevice already instantiated");
+                    // If the usbtv device isn't open, it should be removed as there is an error
+                    if (!usbtv.mIsOpen.get()) {
+                        mReferenceList.remove(usbtv);
+                        break;
+                    } else {
+                        Timber.i("UsbTv device already open");
+                        // Already open
+                        return false;
+                    }
+                }
+            }
 
-    public void setScanType(ScanType type) {
-        mFrameInfo = new FrameInfo(ImageFormat.YUY2, type, mFrameInfo.getTvNorm());
-        if (mIsStreaming.get()) {
-            stopStreaming();
-            startStreaming();
-        }
-    }
 
-    public void setInput(InputSelection input) {
+            if (dev.getVendorId() != 0x1b71 || dev.getProductId() != 0x3002) {
+                Timber.i("Not a valid UsbTv Capture device");
+                return false;
+            }
 
-        mInput = input;
-        if (mIsStreaming.get()) {
-            stopStreaming();
-            startStreaming();
-        }
-    }
+            // Register Usb Receiver if requested  // TODO: Don't forget to unregister it when mReferenceList is empty
+            if (!userManagedReceiver && !mUsbReceiverRegistered) {
+                mUsbReceiverRegistered = true;
+                IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
+                filter.addAction(ACTION_USB_ATTACHED);
+                filter.addAction(ACTION_USB_DETACHED);
+                appContext.registerReceiver(mUsbReceiver, filter);
+                Timber.v("Usb Broadcast Receiver Registered");
+            }
 
-    public void setDrawingSurface(Surface surface) {
-        mDrawingSurface = surface;
-        if (mFrameProcessor != null) {
-            mFrameProcessor.setDrawingSurface(surface);
+            UsbTv usbtv = new UsbTv(appContext, dev, cbs);
+            mReferenceList.add(usbtv);
+
+            UsbManager manager = (UsbManager) appContext.getSystemService(Context.USB_SERVICE);
+
+            if (manager.hasPermission(dev)) {
+                usbtv.mHasUsbPermission = true;
+
+                // Since Initialization requires blocking calls
+                // to native code, the nativehandler takes care of it
+                Message msg = usbtv.mNativeHander.
+                        obtainMessage(NativeAction.OPEN_DEVICE.ordinal());
+                usbtv.mNativeHander.sendMessage(msg);
+                return true;
+            } else if (!mUsbReceiverRegistered) {
+                Timber.e("Error, Usb is user managed but device does not have permission");
+                return false;
+            } else {
+                PendingIntent mPendingIntent = PendingIntent.getBroadcast(
+                        appContext, 0, new Intent(ACTION_USB_PERMISSION), 0);
+                manager.requestPermission(dev, mPendingIntent);
+                return true;
+            }
         }
     }
 
@@ -224,222 +266,25 @@ public class UsbTv {
         return devList;
     }
 
-    /**
-     * Opens a usbtv007 device.
-     *
-     * @param usbtvDevice the device to open
-     */
-    public void open(@NonNull UsbDevice usbtvDevice) {
-        boolean execCallback = true;
-        synchronized (DEV_LOCK) {
-            if (usbtvDevice.getVendorId() == 0x1b71 && usbtvDevice.getProductId() == 0x3002) {
-                if (!mIsOpen.get()) {
-                    if (!mUserManagedUsbEvents && !mUsbReceiverRegistered) {
-                        mUsbReceiverRegistered = true;
-                        IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
-                        filter.addAction(ACTION_USB_ATTACHED);
-                        filter.addAction(ACTION_USB_DETACHED);
-                        mContext.registerReceiver(mUsbReceiver, filter);
-                        Timber.v("Usb Broadcast Receiver Registered");
-                    }
+    private UsbTv(@NonNull Context appContext, @NonNull UsbDevice dev,
+                  @NonNull DriverCallbacks driverCbs) {
+        mContext = appContext;
+        mUsbtvDevice = dev;
+        mDriverCallbacks = driverCbs;
 
-                    mUsbtvDevice = usbtvDevice;
-                    UsbManager manager = (UsbManager) mContext.getSystemService(Context.USB_SERVICE);
+        // TODO: get from shared prefs?
+        mInput = InputSelection.COMPOSITE;
+        mNorm = TvNorm.NTSC;
+        mScanType = ScanType.PROGRESSIVE;
 
-                    if (manager.hasPermission(mUsbtvDevice)) {
-                        mHasUsbPermission = true;
-                        initDevice();
-                    } else if (!mUsbReceiverRegistered) {
-                        Timber.e("Error, Usb is user managed but device does not have permission");
-                    } else {
-                        execCallback = false; // Permission must be requested, so do not execute CB
-                        PendingIntent mPendingIntent = PendingIntent.getBroadcast(
-                                mContext, 0, new Intent(ACTION_USB_PERMISSION), 0);
-                        manager.requestPermission(mUsbtvDevice, mPendingIntent);
-                    }
-                } else {
-                    Timber.i("Device already open, close it first");
-                }
-            } else {
-                Timber.i("Invalid Usbtv007 capture device, ids do not match");
-            }
-        }
-
-        if (execCallback) {
-            mDriverCallbacks.onOpen(mIsOpen.get());
-        }
-
-    }
-
-    /**
-     * Closes Usbtv007 usb device.  Unregisters usb reciever if it is registerd and frees
-     * all resources
-     */
-    public void close() {
-        synchronized (DEV_LOCK) {
-            if (mUsbReceiverRegistered) {
-                mUsbReceiverRegistered = false;
-                mContext.unregisterReceiver(mUsbReceiver);
-            }
-
-            if (mIsOpen.get()) {
-                if (mIsStreaming.get()) {
-                    stopStreaming();
-                }
-                try {
-                    mIsonchronousManager.dispose();
-                } catch (IOException e) {
-                    Timber.i(e);
-                }
-
-                mIsOpen.set(false);
-                mUsbtvConnection.close();
-                mUsbtvConnection = null;
-                mIsonchronousManager = null;
-                mUsbtvDevice = null;
-                mUsbtvControl = null;
-
-            }
-        }
-        mDriverCallbacks.onClose();
-    }
-
-    /**
-     * Starts usb streaming.  Sends initialization registers via control transfer, sets the
-     * tv norm and input, initializes and submits isonchronous urb requests, and starts
-     * a thread that listens for such requests.
-     *
-     * @return true on success or if already streaming.  False on error or if device is not open
-     */
-    public void startStreaming() {
-        Thread streamStart = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                synchronized (STREAM_LOCK) {
-                    if (mIsOpen.get() && !mIsStreaming.get()) {
-                        boolean success = true;
-                        try {
-                            mIsonchronousManager.setInterface(0, 0);
-                        } catch (IOException e) {
-                            Timber.i(e);
-                            success = false;
-                        }
-
-                        if (!success) {
-                            Timber.e("Error setting Usb Device to interface 0");
-                            return;
-                        }
-
-                        // TODO: attempting to start/stop audio for debug purposes
-                        /*success = mUsbtvControl.startAudio();
-                        if (!success) {
-                            Timber.e("Error initializing audio stream");
-                            return;
-                        }*/
-
-
-                        success = mUsbtvControl.initializeVideo();
-                        if (!success) {
-                            Timber.e("Error initializing video stream");
-                            return;
-                        }
-
-                        success = mUsbtvControl.setTvNorm(mFrameInfo.getTvNorm());
-                        if (!success) {
-                            Timber.e("Error setting TV Norm");
-                            return;
-                        }
-
-                        success = mUsbtvControl.setInput(mInput);
-                        if (!success) {
-                            Timber.e("Error setting video input");
-                            return;
-                        }
-
-                        mFrameProcessor = new FrameProcessor(mContext, mIsonchronousManager,
-                                mFrameInfo, mDrawingSurface);
-                        mFrameProcessor.setRawFrameCallback(mRawFrameCallback);
-
-                        try {
-                            mIsonchronousManager.setInterface(0, 1);
-                        } catch (IOException e) {
-                            Timber.i(e);
-                            success = false;
-                        }
-
-                        mIsonchronousManager.preallocateRequests(MAX_ISO_TRANSFERS);
-                        // Allocate, Initialize and Submit Iso requests/urbs
-                        for (int i = 0; i < MAX_ISO_TRANSFERS; i++) {
-                            UsbIso.Request req = mIsonchronousManager.getRequest();
-                            req.initialize(USBTV_VIDEO_ENDPOINT);
-                            try {
-                                req.submit();
-                            } catch (IOException e) {
-                                Timber.i(e);
-                                success = false;
-                                break;
-                            }
-                        }
-
-                        if (!success) {
-                            Timber.e("Error initializing usb isonchronous requests/urbs");
-                            try {
-                                mIsonchronousManager.flushRequests();
-                            } catch (IOException e) {
-                                Timber.i(e);
-                            }
-                            return;
-                        }
-
-                        if (!success) {
-                            Timber.e("Error setting interface to alternate setting 1");
-                            return;
-                        }
-
-
-                        mFrameProcessor.start();
-                        mIsStreaming.set(true);
-
-                    }
-                }
-            }
-        });
-        streamStart.start();
+        // Create HandlerThread and NativeHandler
+        HandlerThread nativeThread = new HandlerThread("Native Call Thread");
+        nativeThread.start();
+        mNativeHander = new Handler(nativeThread.getLooper(), mNativeHandlerCallback);
     }
 
 
-    /**
-     * Stops device from streaming video.  Flushes all urb requests and set the interface
-     * altsetting to 0.
-     */
-    public void stopStreaming() {
-        synchronized (STREAM_LOCK) {
-            mIsStreaming.set(false);
-            if (mFrameProcessor != null) {
-                mFrameProcessor.stopStreaming();
-                mFrameProcessor = null;
-            }
-            if (mIsonchronousManager != null) {
-                try {
-                    mIsonchronousManager.flushRequests();
-                } catch (IOException e) {
-                    Timber.i(e);
-                }
 
-                try {
-                    mIsonchronousManager.setInterface(0, 0);
-                } catch (IOException e) {
-                    Timber.i(e);
-                }
-
-                // TODO: attempting to start/stop audio for debug purposes
-                /*if (mUsbtvControl.stopAudio()) {
-                    Timber.e("Error stopping audio stream");
-                    return;
-                }*/
-            }
-        }
-    }
 
     private boolean initDevice() {
         if (!mHasUsbPermission) {
@@ -494,18 +339,40 @@ public class UsbTv {
         Timber.v("Endpoint description reported max size: %d", ep.getMaxPacketSize());
         int maxPacketSize = calculateMaxEndpointSize(ep.getMaxPacketSize());
 
-        mUsbtvControl = new UsbTvControl(mUsbtvConnection);
-        mIsonchronousManager = new UsbIso(mUsbtvConnection.getFileDescriptor(),
-                MAX_ISO_PACKETS, maxPacketSize);
+       if (!initialize(mUsbtvConnection.getFileDescriptor(), USBTV_VIDEO_ENDPOINT, maxPacketSize,
+               mInput.ordinal(), mNorm.ordinal(), mScanType.ordinal())) {
+           mUsbtvConnection.close();
+           return false;
+       }
 
-        try {
-            mIsonchronousManager.setInterface(0, 0);
-        } catch (IOException e) {
-            Timber.v(e);
-        }
         mIsOpen.set(true);
         return true;
 
+    }
+
+    private void closeDevice() {
+
+        synchronized (OPEN_LOCK) {
+            if (mIsOpen.get()) {
+                if (mIsStreaming.compareAndSet(true, false)) {
+                    stopStreaming();        // Native stop streaming
+                }
+                dispose();  // Native Dispose, native code should stop streaming
+                mIsOpen.set(false);
+                mUsbtvConnection.close();
+                mUsbtvConnection = null;
+                mUsbtvDevice = null;
+            }
+
+            mReferenceList.remove(this);
+
+            if (mReferenceList.isEmpty()) {
+                if (mUsbReceiverRegistered) {
+                    mUsbReceiverRegistered = false;
+                    mContext.unregisterReceiver(mUsbReceiver);
+                }
+            }
+        }
     }
 
     /**
@@ -524,13 +391,183 @@ public class UsbTv {
         return base * multplier;
     }
 
-    public void deviceDetached(UsbDevice device) {
+    public static void deviceDetached(UsbDevice device) {
         //TODO:
     }
 
-    public void deviceAttached(UsbDevice device) {
+    public static void deviceAttached(UsbDevice device) {
         //TODO:
     }
 
+    // Callback From JNI
+    void frameCallback(byte[] frame, int width, int height, int id) {
+        if (mFrameCallback != null) {
+            UsbTvFrame tvFrame = new UsbTvFrame(frame, width, height, id, mScanType, mNorm);
+            mFrameCallback.onFrameReceived(tvFrame);
+        }
+    }
+
+    // Native Methods
+    private native boolean initialize(int fileDescriptor, int isoEndpoint, int maxIsoPacketSize,
+                                      int input, int norm, int scantype);
+    private native void dispose();
+    private native void setSurface(Surface renderSurface);
+    private native void useCallback(boolean shouldUse);
+    private native boolean startStreaming();
+    private native void stopStreaming();
+    private native boolean setInput(int input);
+    private native boolean setTvNorm(int tvNorm);
+    private native boolean setScanType(int scanType);
+    private native boolean setControl(int control, int value);
+    private native int getControl(int control);
+
+
+    private final IUsbTvDriver mDriverInterface = new IUsbTvDriver(this) {
+
+        @Override
+        public void close() {
+            Message msg = mNativeHander.obtainMessage(NativeAction.CLOSE_DEVICE.ordinal());
+            mNativeHander.sendMessage(msg);
+        }
+
+        @Override
+        public boolean isOpen() {
+            return mIsOpen.get();
+        }
+
+        @Override
+        public boolean isStreaming() {
+            return mIsStreaming.get();
+        }
+
+        @Override
+        public void startStreaming() {
+            Message msg = mNativeHander.obtainMessage(NativeAction.START_STREAMING.ordinal());
+            mNativeHander.sendMessage(msg);
+        }
+
+        @Override
+        public void stopStreaming() {
+            Message msg = mNativeHander.obtainMessage(NativeAction.STOP_STREAMING.ordinal());
+            mNativeHander.sendMessage(msg);
+        }
+
+        @Override
+        public InputSelection getInputSelection() {
+            return mInput;
+        }
+
+        @Override
+        public void setDrawingSurface(Surface drawingSurface) {
+            Message msg = mNativeHander.obtainMessage(NativeAction.SET_SURFACE.ordinal(),
+                    drawingSurface);
+            mNativeHander.sendMessage(msg);
+        }
+
+        @Override
+        public void setFrameCallback(FrameCallback cb) {
+            Message msg = mNativeHander.obtainMessage(NativeAction.SET_CALLBACK.ordinal(), cb);
+            mNativeHander.sendMessage(msg);
+        }
+
+        @Override
+        public void setInput(InputSelection input) {
+            Message msg = mNativeHander.obtainMessage(NativeAction.SET_INPUT.ordinal(), input);
+            mNativeHander.sendMessage(msg);
+        }
+
+        @Override
+        public void setNorm(TvNorm norm) {
+            Message msg = mNativeHander.obtainMessage(NativeAction.SET_NORM.ordinal(), norm);
+            mNativeHander.sendMessage(msg);
+        }
+
+        @Override
+        public void setScanType(ScanType scanType) {
+            Message msg = mNativeHander.obtainMessage(NativeAction.SET_SCANTYPE.ordinal(), scanType);
+            mNativeHander.sendMessage(msg);
+        }
+
+        @Override
+        public void setControl(ColorControl control, int value) {
+            Message msg = mNativeHander.obtainMessage(NativeAction.SET_CONTROL.ordinal());
+            msg.arg1 = value;
+            mNativeHander.sendMessage(msg);
+        }
+
+        @Override
+        public int getColorControl(ColorControl control) {
+            return getControl(control.ordinal());
+        }
+    };
+
+    private final Handler.Callback mNativeHandlerCallback = new Handler.Callback() {
+        @Override
+        public boolean handleMessage(Message message) {
+            NativeAction action = NativeAction.fromOrdinal(message.what);
+
+            switch(action) {
+                case OPEN_DEVICE:
+                    if (initDevice()) {
+                        mDriverCallbacks.onOpen(mDriverInterface, true);
+                    } else {
+                        mReferenceList.remove(UsbTv.this);
+                        mDriverCallbacks.onOpen(null, false);
+                    }
+                    break;
+                case CLOSE_DEVICE:
+                    closeDevice();
+                    break;
+                case START_STREAMING:
+                    if (!startStreaming()) {
+                        mIsStreaming.set(false);
+                        mDriverCallbacks.onError();  // TODO: add error
+                    } else {
+                        mIsStreaming.set(true);
+                    }
+                    break;
+                case STOP_STREAMING:
+                    stopStreaming();
+                    mIsStreaming.set(false);
+                    break;
+                case SET_INPUT:
+                    mInput = (InputSelection) message.obj;
+                    if (!setInput(mInput.ordinal())) {
+                        mDriverCallbacks.onError();
+                    }
+                    break;
+                case SET_NORM:
+                    mNorm = (TvNorm) message.obj;
+                    if (!setTvNorm(mNorm.ordinal())) {
+                        mDriverCallbacks.onError();
+                    }
+                    break;
+                case SET_SCANTYPE:
+                    mScanType = (ScanType) message.obj;
+                    if (!setScanType(mScanType.ordinal())) {
+                        mDriverCallbacks.onError();
+                    }
+                    break;
+                case SET_CONTROL:
+                    ColorControl control = (ColorControl) message.obj;
+                    if (!setControl(control.ordinal(), message.arg1)) {
+                        mDriverCallbacks.onError();
+                    }
+                    break;
+                case SET_SURFACE:
+                    Surface surface = (Surface)message.obj;
+                    setSurface(surface);
+                    break;
+                case SET_CALLBACK:
+                    mFrameCallback = (FrameCallback) message.obj;
+                    boolean use = mFrameCallback != null;
+                    useCallback(use);
+                    break;
+                default:
+                    Timber.i("Unknown Native Command Received");
+            }
+            return true;
+        }
+    };
 
 }

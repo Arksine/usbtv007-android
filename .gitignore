@@ -25,6 +25,8 @@ build/
 .idea/misc.xml
 .idea/libraries
 
+.externalNativeBuild/
+
 # Local configuration file (sdk path, etc)
 local.properties
 
