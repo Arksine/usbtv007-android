@@ -47,13 +47,14 @@
 // TODO: add colorspace and scantype so that receiving functions know how to process it. Also
 // add TvNorm and a Flag for Frame Status (complete, incomplete, other possible statuses)
 struct UsbTvFrame {
-	void* buffer;
-	uint32_t bufferSize;
-	uint16_t width;
-	uint16_t height;
-	uint32_t frameId;
-	uint32_t flags;
-	std::atomic_bool lock;
+	void*       buffer;
+	uint32_t    bufferSize;
+	uint16_t    width;
+	uint16_t    height;
+	uint32_t    frameId;
+	uint32_t    flags;
+
+	std::atomic_flag lock = ATOMIC_FLAG_INIT;
 };
 
 enum struct TvInput {

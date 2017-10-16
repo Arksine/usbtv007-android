@@ -24,11 +24,9 @@ class AndroidUsbDevice;
 
 namespace UsbDevice {
 	struct ThreadContext {
-		AndroidUsbDevice* parent;
-		IsonchronousCallback callback;
-		bool* isoThreadRunning;
-		pthread_mutex_t* isoMutex;
-		pthread_cond_t* isoEndCondition;
+		AndroidUsbDevice*       parent;
+		IsonchronousCallback    callback;
+		bool*                   isoThreadRunning;
 	};
 }
 
@@ -38,22 +36,20 @@ namespace UsbDevice {
 class AndroidUsbDevice {
 private:
 
-	int fileDescriptor;
-
-	uint8_t isoTransfersAllocated;
-	uint8_t isoTransfersSubmitted;
+	int     _fileDescriptor;
+	uint8_t _isoTransfersAllocated;
+	uint8_t _isoTransfersSubmitted;
 
 	// iso urb vars
-	uint8_t isoEndpoint;
-	uint32_t maxIsoPacketLength;
-	uint8_t numIsoPackets;
-	bool isoThreadRunning;
+	uint8_t     _isoEndpoint;
+	uint32_t    _maxIsoPacketLength;
+	uint8_t     _numIsoPackets;
+	bool        _isoThreadRunning;
 
-	UsbDevice::ThreadContext* isoThreadCtx;
-	pthread_t isoThread;
-	pthread_mutex_t isoMutex;
-	pthread_cond_t isoEndConditon;
-	usbdevfs_urb *isonchronousUrbs[USBTV_ISOC_TRANSFERS];
+	UsbDevice::ThreadContext*   _isoThreadCtx;
+	pthread_t                   _isoThread;
+	pthread_mutex_t             _isoMutex;
+	usbdevfs_urb*               _isonchronousUrbs[USBTV_ISOC_TRANSFERS];
 
 
 
@@ -73,11 +69,11 @@ public:
 	~AndroidUsbDevice();
 
 	int getFileDescriptor() {
-		return fileDescriptor;
+		return _fileDescriptor;
 	}
 
 	bool isIsoThreadRunning() {
-		return isoThreadRunning;
+		return _isoThreadRunning;
 	}
 
 	bool setInterface(unsigned int interface, unsigned int altSetting);
@@ -100,10 +96,6 @@ public:
 	bool startIsoAsyncRead();
 	void stopIsoAsyncRead();
 	usbdevfs_urb* isoReadSync(bool wait);
-
-
-
-
 };
 
 

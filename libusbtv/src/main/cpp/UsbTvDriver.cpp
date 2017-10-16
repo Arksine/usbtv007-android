@@ -50,6 +50,7 @@ UsbTvDriver::UsbTvDriver(JavaVM *jvm, jobject thisObj, int fd, int isoEndpoint,
 	_frameProcessContext->usbtv = this;
 	_frameProcessContext->shouldRender = &_shouldRender;
 	_frameProcessContext->useCallback = &_useCallback;
+	_frameProcessContext->threadRunning = &_processThreadRunning;
 	_frameProcessContext->callback = new JavaCallback(jvm, thisObj, "frameCallback");
 
 	// TODO: Initialize Audio Vars
@@ -71,6 +72,9 @@ UsbTvDriver::~UsbTvDriver() {
 	delete _frameProcessContext->callback;
 	delete _frameProcessContext;
 	delete _usbConnection;
+
+	pthread_mutex_destroy(&_frameProcessMutex);
+	pthread_cond_destroy(&_frameReadyCond);
 }
 
 bool UsbTvDriver::startStreaming() {
@@ -136,6 +140,7 @@ bool UsbTvDriver::startStreaming() {
 		_usbInputFrame = fetchFrameFromPool();
 
 		// Start Frame processing thread
+		_processThreadRunning = true;
 		success = pthread_create(&_frameProcessThread, nullptr,
 		                         frameProcessThread, (void*)_frameProcessContext) == 0;
 		if (!success) {
@@ -144,7 +149,7 @@ bool UsbTvDriver::startStreaming() {
 			stopStreaming();
 			return false;
 		}
-		_processThreadRunning = true;
+
 
 		// Set interface to alternate setting 1, which begins streaming
 		success = _usbConnection->setInterface(0, 1);
@@ -197,13 +202,19 @@ void UsbTvDriver::stopStreaming() {
 
 		// Stop Frame processor thread
 		if (_processThreadRunning) {
+			_processThreadRunning = false;
 			pthread_mutex_lock(&_frameProcessMutex);
 			if (_frameWait) {
+				// Clear lock for process frame and set it to null
+				// so the thread exits
+				if (_processFrame != nullptr) {
+					_processFrame->lock.clear(std::memory_order_release);
+					_processFrame = nullptr;
+				}
 				pthread_cond_signal(&_frameReadyCond);
 			}
 			pthread_mutex_unlock(&_frameProcessMutex);
 			pthread_join(_frameProcessThread, nullptr);
-			_processThreadRunning = false;
 		}
 
 		_usbConnection->setInterface(0, 0);
@@ -212,13 +223,13 @@ void UsbTvDriver::stopStreaming() {
 
 		// Clear lock for frame that usb was reading into;
 		if (_usbInputFrame != nullptr) {
-			_usbInputFrame->lock = false;
+			_usbInputFrame->lock.clear(std::memory_order_release);
 			_usbInputFrame = nullptr;
 		}
 
 		// Clear lock for process frame
 		if (_processFrame != nullptr) {
-			_processFrame->lock = false;
+			_processFrame->lock.clear(std::memory_order_release);
 			_processFrame = nullptr;
 		}
 
@@ -339,7 +350,6 @@ UsbTvFrame* UsbTvDriver::getFrame() {
 	pthread_mutex_lock(&_frameProcessMutex);
 	_frameWait = true;
 	pthread_cond_wait(&_frameReadyCond, &_frameProcessMutex);
-	_frameWait = false;
 	pthread_mutex_unlock(&_frameProcessMutex);
 	return _processFrame;
 }
@@ -386,7 +396,7 @@ void UsbTvDriver::allocateFramePool() {
 			_framePool[i]->width = _frameWidth;
 			_framePool[i]->height = (uint16_t) bufferheight;
 			_framePool[i]->flags = 0;
-			_framePool[i]->lock = false;
+			_framePool[i]->lock.clear(std::memory_order_release);
 		}
 	}
 }
@@ -395,9 +405,9 @@ void UsbTvDriver::allocateFramePool() {
  * Frees UsbTvFrame objects from the heap, as well as their associated buffers.
  */
 void UsbTvDriver::freeFramePool() {
-	if (_framePool!= nullptr) {
+	if (_framePool!= nullptr && !_streamActive) {
 		for (int i = 0; i < USBTV_FRAME_POOL_SIZE; i++) {
-			if (_framePool[i]->lock) {
+			if (_framePool[i]->lock.test_and_set(std::memory_order_acquire)) {
 				LOGD("frame index %d still has a lock when attempting to free", i);
 			}
 			free(_framePool[i]->buffer);
@@ -425,7 +435,7 @@ UsbTvFrame* UsbTvDriver::fetchFrameFromPool() {
 
 		// Test lock for current frame.  When a frame is found with a cleared lock,
 		// the lock flag will be set and the frame will be returned
-		if (frame->lock.compare_exchange_strong(expected, true)) {
+		if (!frame->lock.test_and_set(std::memory_order_acquire)) {
 			frame->flags = FRAME_START;
 			return frame;
 		}
@@ -518,10 +528,12 @@ void UsbTvDriver::processPacket(__be32 *packet) {
 		}
 
 		if (packetNumber == 0 || frameId != _currentFrameId) {
-			// Check to see if last frame was in progress, but not submitted
+			// If last frame was in progress but not submitted then it is dropped
+			// TODO: I could do a frame check here, rather than at the end.  That way
+			// I won't drop as many frames
 			if ((_usbInputFrame->flags & FRAME_IN_PROGRESS) > 0) {
-				bool lastOdd = ((frameId - _currentFrameId) % 2 == 0) == isOdd;
-				checkFinishedFrame(lastOdd);
+				LOGD("Incomplete Frame Dropped, ID: %d", _currentFrameId);
+				_droppedFrameCounter++;
 			}
 			_currentFrameId = frameId;
 			_packetsDone = 0;
@@ -544,6 +556,9 @@ void UsbTvDriver::processPacket(__be32 *packet) {
 
 		_packetsDone++;
 
+		// TODO: instead of checking a Finished Frame when packetNumber == 359, I could
+		// do it when a new Id is received.  Problem is then I don't know if the current
+		// frame is odd or not
 		// Packet Finished
 		if (packetNumber == (uint32_t)(_packetsPerField - 1)) {
 			checkFinishedFrame(isOdd);
@@ -651,6 +666,7 @@ void UsbTvDriver::packetToInterleavedFrame(uint8_t *packet, uint32_t packetNo, b
 void UsbTvDriver::notifyFrameComplete() {
 	pthread_mutex_lock(&_frameProcessMutex);
 	if (_frameWait) {
+		_frameWait = false;
 		// Another thread is polling and waiting on a new frame, set it
 		_usbInputFrame->frameId = _currentFrameId;
 		_processFrame = _usbInputFrame;
@@ -658,6 +674,7 @@ void UsbTvDriver::notifyFrameComplete() {
 		pthread_cond_signal(&_frameReadyCond);
 	} else {
 		// Frame dropped
+		LOGD("Frame Dropped due to no request, ID: %d", _currentFrameId);
 		_droppedFrameCounter++;
 		// TODO: memset buffer to zeroes?
 		_usbInputFrame->flags = FRAME_START;
@@ -685,7 +702,7 @@ void *frameProcessThread(void* context) {
 
 	UsbTvFrame* frame;
 
-	while (usbtv->isStreaming()) {
+	while (*(ctx->threadRunning)) {
 		frame = usbtv->getFrame();
 
 		if (frame == nullptr) {
@@ -701,7 +718,7 @@ void *frameProcessThread(void* context) {
 		}
 
 		// TODO: memset buffer to zeroes?
-		frame->lock = false;
+		frame->lock.clear(std::memory_order_release);
 
 	}
 

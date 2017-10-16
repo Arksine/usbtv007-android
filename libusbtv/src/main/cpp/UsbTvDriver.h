@@ -18,6 +18,7 @@ namespace Driver {
 		JavaCallback*   callback;
 		bool*           useCallback;
 		bool*           shouldRender;
+		bool*           threadRunning;
 	};
 }
 

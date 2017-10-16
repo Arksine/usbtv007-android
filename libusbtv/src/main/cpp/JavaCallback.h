@@ -12,28 +12,28 @@
 
 class JavaCallback {
 private:
-	JavaVM* javaVm;
-	std::string functionName;
-	JNIEnv *env;
-	jmethodID cbMethod;
-	jclass methodClass;
-	jobject methodParent;
-	bool threadAttached;
+	JavaVM*     _javaVm;
+	std::string _functionName;
+	JNIEnv*     _env;
+	jmethodID   _cbMethod;
+	jclass      _methodClass;
+	jobject     _methodParent;
+	bool        _threadAttached;
 
 	bool setEnv() {
-		jint ret = javaVm->GetEnv((void**)&env, JNI_VERSION_1_6);
+		jint ret = _javaVm->GetEnv((void**)&_env, JNI_VERSION_1_6);
 		switch (ret) {
 			case JNI_OK:
 				// env okay
 				LOGD("Java Environment Set");
 				return true;
 			case JNI_EDETACHED:
-				if (javaVm->AttachCurrentThread(&env, nullptr) >= 0) {
+				if (_javaVm->AttachCurrentThread(&_env, nullptr) >= 0) {
 					LOGD("successfully attached thread");
 					return true;
 				} else {
 					LOGD("Could not attach JVM to thread");
-					env = nullptr;
+					_env = nullptr;
 					return false;
 				}
 			default:
@@ -45,50 +45,50 @@ public:
 	// also need to be added to the callback.  This will change the signature
 	// below and the invoke member function
 	JavaCallback(JavaVM* jvm, jobject parent, std::string funcName) {
-		javaVm = jvm;
-		threadAttached = false;
-		functionName = funcName;
+		_javaVm = jvm;
+		_threadAttached = false;
+		_functionName = funcName;
 		if(setEnv()) {
-			methodParent = env->NewGlobalRef(parent);
-			jclass cls = env->GetObjectClass(parent);
-			methodClass = (jclass) env->NewGlobalRef(cls);
+			_methodParent = _env->NewGlobalRef(parent);
+			jclass cls = _env->GetObjectClass(parent);
+			_methodClass = (jclass) _env->NewGlobalRef(cls);
 		}
 
 
 	}
 	~JavaCallback() {
 		if(setEnv()) {
-			env->DeleteGlobalRef(methodClass);
-			env->DeleteGlobalRef(methodParent);
+			_env->DeleteGlobalRef(_methodClass);
+			_env->DeleteGlobalRef(_methodParent);
 		}
 	}
 
 	void attachThread() {
-		threadAttached = setEnv();
+		_threadAttached = setEnv();
 
-		if (threadAttached) {
+		if (_threadAttached) {
 			LOGD("Thread successfully attached");
 			const char *signature = "([BIII)V";
-			cbMethod = env->GetMethodID(methodClass, functionName.c_str(), signature);
+			_cbMethod = _env->GetMethodID(_methodClass, _functionName.c_str(), signature);
 		} else {
 			LOGD("Unable to attach thread");
 		}
 	}
 
 	void detachThread() {
-		if (threadAttached) {
-			javaVm->DetachCurrentThread();
-			threadAttached = false;
+		if (_threadAttached) {
+			_javaVm->DetachCurrentThread();
+			_threadAttached = false;
 		}
 	}
 
 	void invoke(UsbTvFrame* frame) {
-		if (threadAttached) {
-			jbyteArray array = env->NewByteArray(frame->bufferSize);
-			env->SetByteArrayRegion(array, 0, frame->bufferSize, (jbyte *) frame->buffer);
-			env->CallVoidMethod(methodParent, cbMethod, array, (jint) frame->width,
+		if (_threadAttached) {
+			jbyteArray array = _env->NewByteArray(frame->bufferSize);
+			_env->SetByteArrayRegion(array, 0, frame->bufferSize, (jbyte *) frame->buffer);
+			_env->CallVoidMethod(_methodParent, _cbMethod, array, (jint) frame->width,
 			                    (jint) frame->height, (jint) frame->frameId);
-			env->DeleteLocalRef(array);
+			_env->DeleteLocalRef(array);
 		}
 	}
 };

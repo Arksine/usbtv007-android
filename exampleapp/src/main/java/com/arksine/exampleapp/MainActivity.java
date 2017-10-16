@@ -86,7 +86,7 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        mRenderer = UsbTv.getRenderer(MainActivity.this, mPreviewSurface);
+        mRenderer = UsbTv.getRenderer(getApplicationContext(), mPreviewSurface);
         mRootLayout = (FrameLayout) findViewById(R.id.activity_main);
         mCameraView = (SurfaceView) findViewById(R.id.camera_view);
 
