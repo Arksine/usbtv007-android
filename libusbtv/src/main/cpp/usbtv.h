@@ -10,32 +10,9 @@
 #include <atomic>
 #include "AndroidUsbDevice.h"
 
-#define USBTV_BASE		    0xc000
-#define USBTV_VIDEO_EP	    0x81
-#define USBTV_AUDIO_EP  	0x83
-#define USBTV_CONTROL_REG	11
-#define USBTV_REQUEST_REG	12
-
-
-#define USBTV_ISOC_TRANSFERS	            16
-#define USBTV_ISOC_PACKETS_PER_REQUEST	    8
-
-// TODO: These are the sizes in 32-bit buffers.  The sizes in bytes are 1024 and 960 respectively
-// Not sure which I should use as of yet, C/C++ makes it easy to cast arrays to any kind of data
-// so its not difficult to use either
-#define USBTV_PACKET_SIZE	    256
-#define USBTV_PAYLOAD_SIZE      240
-
-// size of the array containing input frame buffers.  TODO: I should probably make this a dynamic size
-#define USBTV_FRAME_POOL_SIZE 4
-
-#define USBTV_AUDIO_URBSIZE	20480
-#define USBTV_AUDIO_HDRSIZE	4
-#define USBTV_AUDIO_BUFFER	65536
-
-#define ARRAY_SIZE(array) (sizeof((array))/sizeof((array[0])))
-
 extern "C" {
+jint JNI_OnLoad(JavaVM *jvm, void *reserved);
+
 JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_initialize(JNIEnv* jenv,
                                                                       jobject thisObj,
                                                                       jint fd,

@@ -1,5 +1,5 @@
 //
-// Created by Eric on 10/9/2017.
+// Created by Eric on 10/9/2017
 //
 
 #include "AndroidUsbDevice.h"
@@ -14,14 +14,13 @@ AndroidUsbDevice::AndroidUsbDevice(int fd, IsonchronousCallback callback) {
 	fileDescriptor = fd;
 	isoMutex = PTHREAD_MUTEX_INITIALIZER;
 	isoEndConditon = PTHREAD_COND_INITIALIZER;
-	maxIsoTransfers = 0;
+	isoTransfersAllocated = 0;
 	isoTransfersSubmitted = 0;
 	isoEndpoint = 0;
 	maxIsoPacketLength = 0;
 	numIsoPackets = 0;
-	isoThread = NULL;
 	isoThreadRunning = false;
-	isoThreadCtx = new ThreadContext;
+	isoThreadCtx = new UsbDevice::ThreadContext;
 	isoThreadCtx->parent = this;
 	isoThreadCtx->isoThreadRunning = &isoThreadRunning;
 	isoThreadCtx->isoMutex = &isoMutex;
@@ -132,12 +131,12 @@ int AndroidUsbDevice::bulkRead(uint8_t endpoint, unsigned int length, unsigned i
 	}
 
 	usbdevfs_bulktransfer bulk;
-	void* outBuf = data;
+	uint8_t * outBuf = (uint8_t*)data;
 	uint32_t count = 0;
 	int ret, retry;
 
 	while (length > 0) {
-		unsigned int xfer = (length > MAX_USBFS_BULK_SIZE) ? MAX_USBFS_BULK_SIZE : length;
+		int xfer = (length > MAX_USBFS_BULK_SIZE) ? MAX_USBFS_BULK_SIZE : length;
 
 		bulk.ep = endpoint;
 		bulk.len = xfer;
@@ -173,7 +172,7 @@ int AndroidUsbDevice::bulkWrite(uint8_t endpoint, unsigned int length, unsigned 
                                 void *data) {
 
 	usbdevfs_bulktransfer bulk;
-	void* outBuf = data;
+	uint8_t* outBuf = (uint8_t*)data;
 	uint32_t count = 0;
 	int ret;
 
@@ -198,7 +197,7 @@ int AndroidUsbDevice::bulkWrite(uint8_t endpoint, unsigned int length, unsigned 
 
 
 	while (length > 0) {
-		unsigned int xfer = (length > MAX_USBFS_BULK_SIZE) ? MAX_USBFS_BULK_SIZE : length;
+		int xfer = (length > MAX_USBFS_BULK_SIZE) ? MAX_USBFS_BULK_SIZE : length;
 
 		bulk.ep = endpoint;
 		bulk.len = xfer;
@@ -242,21 +241,24 @@ bool AndroidUsbDevice::initIsoTransfers(uint8_t numTransfers, uint8_t endpoint,
 	}
 
 	// Allocate transfers to memory.  If transfers are already allocated, delete the old ones.
-	if (maxIsoTransfers > 0) {
+	if (isoTransfersAllocated > 0) {
 		freeIsoTransfers();
 	}
-	maxIsoTransfers = numTransfers;
-	allocateIsoTransfers(packetLength, numberOfPackets);
 
-	for (; isoTransfersSubmitted < numTransfers; isoTransfersSubmitted++) {
+	allocateIsoTransfers(packetLength, numberOfPackets, numTransfers);
 
-		if (!submitIsoUrb(isonchronousUrbs[isoTransfersSubmitted], endpoint, packetLength, numberOfPackets)) {
+	for (int i = 0; i < numTransfers; i++) {
+
+		if (!submitIsoUrb(isonchronousUrbs[i], endpoint, packetLength, numberOfPackets)) {
 			break;
 		}
+
+		isoTransfersSubmitted++;
 	}
 
 	if (isoTransfersSubmitted != numTransfers) {
-		LOGE("Could not submit all URBs, discarding");
+		LOGE("Could not submit all URBs, discarding.\nSubmitted: %d",
+		     isoTransfersSubmitted);
 
 		// discard submitted iso transfers
 		discardIsoTransfers();
@@ -285,13 +287,14 @@ bool AndroidUsbDevice::initIsoTransfers(uint8_t numTransfers, uint8_t endpoint,
  */
 bool AndroidUsbDevice::submitIsoUrb(usbdevfs_urb *urb, uint8_t endpoint, uint32_t packetLength,
                                     uint8_t numberOfPackets) {
-	if (urb == NULL) {
+	if (urb == nullptr) {
+		LOGD("Cannot submit null urb");
 		return false;
 	}
 
 	urb->type = USBDEVFS_URB_TYPE_ISO;
 	urb->endpoint = endpoint;
-	urb->status = -1;
+	urb->status = 0;
 	urb->flags = USBDEVFS_URB_ISO_ASAP;
 	urb->buffer_length = packetLength * numberOfPackets;
 	urb->actual_length = 0;
@@ -339,18 +342,20 @@ bool AndroidUsbDevice::discardIsoTransfers() {
 		return true;
 	}
 	int ret;
-	int urbIdx;
 	bool success = true;
-	while (isoTransfersSubmitted > 0) {
-		urbIdx = isoTransfersSubmitted - 1;
-		ret = ioctl(fileDescriptor, USBDEVFS_DISCARDURB, isonchronousUrbs[urbIdx]);
-		isoTransfersSubmitted--;
+
+	for (int i = 0; i < isoTransfersSubmitted; i++) {
+		ret = ioctl(fileDescriptor, USBDEVFS_DISCARDURB, isonchronousUrbs[i]);
 
 		if (ret < 0) {
-			LOGE("Error discarding urb index: %d", urbIdx);
+			LOGE("Error discarding urb index: %d", i);
 			success = false;
+		} else {
+			LOGD("Successfully discarded urb, index: %d", i);
 		}
 	}
+
+	isoTransfersSubmitted = 0;
 
 	return success;
 }
@@ -360,22 +365,27 @@ void AndroidUsbDevice::freeIsoTransfers() {
 		discardIsoTransfers();
 	}
 
-	for (int i = 0; i < maxIsoTransfers; i++) {
-		free(isonchronousUrbs[i]->buffer);
-		free(isonchronousUrbs[i]);
+	for (int i = 0; i < isoTransfersAllocated; i++) {
+		if (isonchronousUrbs[i] != nullptr) {
+			free(isonchronousUrbs[i]->buffer);
+			free(isonchronousUrbs[i]);
+			isonchronousUrbs[i] = nullptr;
+		}
 	}
 
-	maxIsoTransfers = 0;
+	isoTransfersAllocated = 0;
 }
 
-void AndroidUsbDevice::allocateIsoTransfers(uint32_t packetLength, uint8_t numberOfPackets) {
+void AndroidUsbDevice::allocateIsoTransfers(uint32_t packetLength, uint8_t numberOfPackets,
+                                            uint8_t numTransfers) {
 	size_t urbSize = sizeof(usbdevfs_urb) + (numberOfPackets * sizeof(usbdevfs_iso_packet_desc));
 	size_t isoBufferSize = packetLength * numberOfPackets;
-
-	for (int i = 0; i < maxIsoTransfers; i++) {
-		isonchronousUrbs[isoTransfersSubmitted] = (usbdevfs_urb*)malloc(urbSize);
-		isonchronousUrbs[isoTransfersSubmitted]->buffer = malloc(size_t(isoBufferSize));
+	LOGD("Urb Size: %d\n Buffer Size: %d", (int)urbSize, (int)isoBufferSize);
+	for (int i = 0; i < numTransfers; i++) {
+		isonchronousUrbs[i] = (usbdevfs_urb*)malloc(urbSize);
+		isonchronousUrbs[i]->buffer = malloc(size_t(isoBufferSize));
 	}
+	isoTransfersAllocated = numTransfers;
 }
 
 /**
@@ -389,11 +399,10 @@ bool AndroidUsbDevice::startIsoAsyncRead() {
 	pthread_mutex_lock(&isoMutex);
 	if (!isoThreadRunning) {
 		isoThreadRunning = true;
-		ret = pthread_create(isoThread, NULL, iso_read_thread, (void *)isoThreadCtx);
+		ret = pthread_create(&isoThread, NULL, iso_read_thread, (void *)isoThreadCtx);
 		if (ret != 0) {
 			success = false;
 			isoThreadRunning = false;
-			isoThread = NULL;
 		}
 	} else {
 		success = false;
@@ -410,18 +419,9 @@ void AndroidUsbDevice::stopIsoAsyncRead() {
 	pthread_mutex_lock(&isoMutex);
 	if (isoThreadRunning) {
 		isoThreadRunning = false;
+		pthread_join(isoThread, nullptr);
 		discardIsoTransfers();
-		timespec timeout;
-		timeout.tv_sec = 1;
-		timeout.tv_nsec = 0;
-		int ret = pthread_cond_timedwait(&isoEndConditon, &isoMutex, &timeout);
-		if (ret != 0) {
-			LOGE("Could not terminate iso read thread");
-			// TODO: install signal handler in thread and call pthread kill?  pthread_cancel
-			// doesn't work
 
-		}
-		isoThread = NULL;
 	}
 	pthread_mutex_unlock(&isoMutex);
 }
@@ -435,7 +435,7 @@ void AndroidUsbDevice::stopIsoAsyncRead() {
  * @return A pointer to a urb if one is received, or NULL
  */
 usbdevfs_urb* AndroidUsbDevice::isoReadSync(bool wait) {
-	int req = wait ? USBDEVFS_REAPURBNDELAY : USBDEVFS_REAPURB;
+	int req = wait ? USBDEVFS_REAPURB : USBDEVFS_REAPURBNDELAY;
 
 	usbdevfs_urb* urb = NULL;
 	int ret = ioctl(fileDescriptor, req, &urb);
@@ -454,13 +454,18 @@ usbdevfs_urb* AndroidUsbDevice::isoReadSync(bool wait) {
  * @return
  */
 void *iso_read_thread(void* context) {
-	AndroidUsbDevice::ThreadContext* ctx = (AndroidUsbDevice::ThreadContext*) context;
+	UsbDevice::ThreadContext* ctx = (UsbDevice::ThreadContext*) context;
 	int fd = ctx->parent->getFileDescriptor();
 	int ret;
 
+	LOGD("Iso thread start.  Thread Running: %s",
+	*(ctx->isoThreadRunning) ? "true" : "false");
+
+	int errorCount = 0;
 	while(*(ctx->isoThreadRunning)) {
-		usbdevfs_urb* urb = NULL;
-		ret = ioctl(fd, USBDEVFS_REAPURBNDELAY, &urb);
+		usbdevfs_urb* urb = nullptr;
+		ret = ioctl(fd, USBDEVFS_REAPURB, &urb);
+
 
 		if (ret == 0) {
 			if (urb->usercontext == ctx->parent) {
@@ -468,22 +473,27 @@ void *iso_read_thread(void* context) {
 				ctx->callback(urb);
 			}
 		} else {
-			if (ret == -EAGAIN) {
+			errorCount++;
+			if (errorCount > 1800) {
+				LOGD("Entire frame of URBs errored");
+				errorCount = 0;
+			}
+
+			// TODO: handle disconnections.  Some of the errors returned are not recoverable
+			/*if (ret == -EAGAIN) {
 				// EAGAIN is recoverable
 				continue;
 			} else {
-				// Unrecoverable error, kill thread
 				*(ctx->isoThreadRunning) = false;
 				break;
-			}
+			}*/
 		}
 
-		ctx->parent->resubmitIsoUrb(urb);
-	}
+		if (urb != nullptr && urb->usercontext == ctx->parent) {
+			ctx->parent->resubmitIsoUrb(urb);
+		}
 
-	pthread_mutex_lock(ctx->isoMutex);
-	pthread_cond_signal(ctx->isoEndCondition);
-	pthread_mutex_unlock(ctx->isoMutex);
+	}
 
 	return 0;
 }

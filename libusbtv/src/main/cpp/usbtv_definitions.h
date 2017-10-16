@@ -9,7 +9,7 @@
 #include <atomic>
 #include <asm/byteorder.h>
 
-#define DEBUG_ON
+//#define DEBUG_ON
 
 #define USBTV_BASE		    0xc000
 #define USBTV_VIDEO_EP	    0x81
@@ -38,6 +38,12 @@
 #define USBTV_PACKET_NO(packet)	(__be32_to_cpu(packet[0]) & 0x00000fff)
 #define ARRAY_SIZE(array) (sizeof((array))/sizeof((array[0])))
 
+// UsbTvFrame Flag defs
+#define FRAME_START         1
+#define FRAME_IN_PROGRESS   (1 << 1)
+#define FRAME_COMPLETE      (1 << 2)
+#define FRAME_PARTIAL       (1 << 3)
+
 // TODO: add colorspace and scantype so that receiving functions know how to process it. Also
 // add TvNorm and a Flag for Frame Status (complete, incomplete, other possible statuses)
 struct UsbTvFrame {
@@ -46,34 +52,8 @@ struct UsbTvFrame {
 	uint16_t width;
 	uint16_t height;
 	uint32_t frameId;
-	std::atomic_flag lock = ATOMIC_FLAG_INIT;
-};
-
-class JavaCallback {
-private:
-	JNIEnv *env;
-	jmethodID cbMethod;
-	jobject methodParent;
-public:
-	// TODO: when color space and scantype are added to UsbTvFrame, they will
-	// also need to be added to the callback.  This will change the signature
-	// below and the invoke member function
-	JavaCallback(JNIEnv *e, jobject parent, const char* funcName) {
-		const char* signature = "([BIII)V";
-		env = e;
-		methodParent = env->NewGlobalRef(parent);
-		jclass usbTv = env->GetObjectClass(parent);
-		cbMethod = env->GetMethodID(usbTv, funcName, signature);
-	}
-	~JavaCallback() {
-		env->DeleteGlobalRef(methodParent);
-	}
-	void invoke(UsbTvFrame* frame) {
-		jbyteArray array = env->NewByteArray(frame->bufferSize);
-		env->SetByteArrayRegion(array, 0, frame->bufferSize, (jbyte*)frame->buffer);
-		env->CallVoidMethod(methodParent, cbMethod, array, (jint)frame->width,
-		                    (jint)frame->height, (jint)frame->frameId);
-	}
+	uint32_t flags;
+	std::atomic_bool lock;
 };
 
 enum struct TvInput {

@@ -173,6 +173,7 @@ public class UsbTv {
     private Handler mNativeHander;
 
     private static ArrayList<UsbTv> mReferenceList = new ArrayList<>();
+    private static UsbTvRenderer mRenderer = null;
 
     static {
         System.loadLibrary("usbtv");
@@ -264,6 +265,13 @@ public class UsbTv {
         }
 
         return devList;
+    }
+
+    public static UsbTvRenderer getRenderer(Context context, Surface surface) {
+        if (mRenderer == null) {
+            mRenderer = new UsbTvRenderer(context, surface);
+        }
+        return mRenderer;
     }
 
     private UsbTv(@NonNull Context appContext, @NonNull UsbDevice dev,
@@ -372,6 +380,7 @@ public class UsbTv {
                     mContext.unregisterReceiver(mUsbReceiver);
                 }
             }
+            mDriverCallbacks.onClose();
         }
     }
 
@@ -400,7 +409,7 @@ public class UsbTv {
     }
 
     // Callback From JNI
-    void frameCallback(byte[] frame, int width, int height, int id) {
+    public void frameCallback(byte[] frame, int width, int height, int id) {
         if (mFrameCallback != null) {
             UsbTvFrame tvFrame = new UsbTvFrame(frame, width, height, id, mScanType, mNorm);
             mFrameCallback.onFrameReceived(tvFrame);
@@ -505,7 +514,7 @@ public class UsbTv {
         @Override
         public boolean handleMessage(Message message) {
             NativeAction action = NativeAction.fromOrdinal(message.what);
-
+            Timber.d("Native Action: %s", action.toString());
             switch(action) {
                 case OPEN_DEVICE:
                     if (initDevice()) {
@@ -520,9 +529,11 @@ public class UsbTv {
                     break;
                 case START_STREAMING:
                     if (!startStreaming()) {
+                        Timber.v("Error starting stream");
                         mIsStreaming.set(false);
                         mDriverCallbacks.onError();  // TODO: add error
                     } else {
+                        Timber.v("Stream Started");
                         mIsStreaming.set(true);
                     }
                     break;

@@ -20,6 +20,19 @@
 
 typedef std::function<void(usbdevfs_urb*)> IsonchronousCallback;
 
+class AndroidUsbDevice;
+
+namespace UsbDevice {
+	struct ThreadContext {
+		AndroidUsbDevice* parent;
+		IsonchronousCallback callback;
+		bool* isoThreadRunning;
+		pthread_mutex_t* isoMutex;
+		pthread_cond_t* isoEndCondition;
+	};
+}
+
+
 // TODO: I should probably add a member to keep device status.  If I recieve -ESHUTDOWN or
 // another unrecoverable event I shouldn't perform any type of USB transaction
 class AndroidUsbDevice {
@@ -27,7 +40,7 @@ private:
 
 	int fileDescriptor;
 
-	uint8_t maxIsoTransfers;
+	uint8_t isoTransfersAllocated;
 	uint8_t isoTransfersSubmitted;
 
 	// iso urb vars
@@ -36,11 +49,12 @@ private:
 	uint8_t numIsoPackets;
 	bool isoThreadRunning;
 
-	pthread_t* isoThread;
+	UsbDevice::ThreadContext* isoThreadCtx;
+	pthread_t isoThread;
 	pthread_mutex_t isoMutex;
 	pthread_cond_t isoEndConditon;
 	usbdevfs_urb *isonchronousUrbs[USBTV_ISOC_TRANSFERS];
-	ThreadContext* isoThreadCtx;
+
 
 
 	int bulkRead(uint8_t endpoint, unsigned int length,
@@ -49,17 +63,11 @@ private:
 	             unsigned int timeout, void* data);
 
 
-	void allocateIsoTransfers(uint32_t packetLength, uint8_t numberOfPackets);
+	void allocateIsoTransfers(uint32_t packetLength, uint8_t numberOfPackets, uint8_t numTransfers);
 	void freeIsoTransfers();
 
 public:
-	struct ThreadContext {
-		AndroidUsbDevice* parent;
-		IsonchronousCallback callback;
-		bool* isoThreadRunning;
-		pthread_mutex_t* isoMutex;
-		pthread_cond_t* isoEndCondition;
-	};
+
 
 	AndroidUsbDevice(int fd, IsonchronousCallback callback);
 	~AndroidUsbDevice();

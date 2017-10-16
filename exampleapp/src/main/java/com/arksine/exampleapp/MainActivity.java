@@ -9,7 +9,10 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.widget.FrameLayout;
 
+import com.arksine.libusbtv.IUsbTvDriver;
 import com.arksine.libusbtv.UsbTv;
+import com.arksine.libusbtv.UsbTvFrame;
+import com.arksine.libusbtv.UsbTvRenderer;
 
 import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -28,16 +31,31 @@ public class MainActivity extends AppCompatActivity {
     AtomicBoolean mIsStreaming = new AtomicBoolean(false);
 
 
-    private UsbTv mTestDriver;
+    private IUsbTvDriver mTestDriver;
+    private UsbTvRenderer mRenderer = null;
+
+    private UsbTv.FrameCallback mFrameCallback = new UsbTv.FrameCallback() {
+        @Override
+        public void onFrameReceived(UsbTvFrame frame) {
+            if (mRenderer != null) {
+        //        mRenderer.processFrame(frame);
+            }
+        }
+    };
+
     private final UsbTv.DriverCallbacks mCallbacks = new UsbTv.DriverCallbacks() {
         @Override
-        public void onOpen(boolean status) {
+        public void onOpen(IUsbTvDriver driver, boolean status) {
             Timber.i("UsbTv Open Status: %b", status);
             synchronized (CAM_LOCK) {
-                if (mPreviewSurface != null) {
-                    mIsStreaming.set(true);
-                    mTestDriver.setDrawingSurface(mPreviewSurface);
-                    mTestDriver.startStreaming();
+                mTestDriver = driver;
+                if (mTestDriver != null) {
+                    mTestDriver.setFrameCallback(mFrameCallback);
+                    if (mPreviewSurface != null) {
+                        mIsStreaming.set(true);
+                        mRenderer.setSurface(mPreviewSurface);
+                        mTestDriver.startStreaming();
+                    }
                 }
             }
         }
@@ -48,6 +66,18 @@ public class MainActivity extends AppCompatActivity {
             if (mPreviewSurface != null) {
                 mPreviewSurface.release();
             }
+
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    finish();
+                }
+            });
+        }
+
+        @Override
+        public void onError() {
+            Timber.i("Error received");
         }
     };
 
@@ -55,9 +85,8 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        mTestDriver = new UsbTv(getApplicationContext(), mCallbacks,
-                false);
 
+        mRenderer = UsbTv.getRenderer(MainActivity.this, mPreviewSurface);
         mRootLayout = (FrameLayout) findViewById(R.id.activity_main);
         mCameraView = (SurfaceView) findViewById(R.id.camera_view);
 
@@ -74,19 +103,22 @@ public class MainActivity extends AppCompatActivity {
 
         if (device != null) {
             Timber.i("Open Device");
-            mTestDriver.open(device);
+            UsbTv.open(device, this, mCallbacks);
         } else {
             Timber.i("Can't open");
         }
 
     }
 
-
     @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        mTestDriver.close();
+    public void onBackPressed() {
+        if (mTestDriver != null && mTestDriver.isOpen()) {
+            mTestDriver.close();
+        } else {
+            super.onBackPressed();
+        }
     }
+
 
     private final SurfaceHolder.Callback mCameraViewCallback = new SurfaceHolder.Callback() {
         @Override
@@ -101,7 +133,7 @@ public class MainActivity extends AppCompatActivity {
             mPreviewSurface = holder.getSurface();
             synchronized (CAM_LOCK) {
                 if (mTestDriver!= null & mIsStreaming.compareAndSet(false, true)) {
-                    mTestDriver.setDrawingSurface(mPreviewSurface);
+                    mRenderer.setSurface(mPreviewSurface);
                     mTestDriver.startStreaming();
                 }
             }

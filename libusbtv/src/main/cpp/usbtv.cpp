@@ -8,8 +8,23 @@
 #include "util.h"
 
 UsbTvDriver* usbtv = nullptr;
+JavaVM* javaVm = nullptr;
 
-// TODO: jniOnload and jniOnUnload?
+// TODO: jniOnUnload?
+
+jint JNI_OnLoad(JavaVM *jvm, void *reserved) {
+	javaVm = jvm;
+
+	JNIEnv* env;
+	if (jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+		return -1;
+	}
+
+	// I could register natives here if I dont want these long function names
+
+	return JNI_VERSION_1_6;
+
+}
 
 JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_initialize(JNIEnv* jenv,
                                                                       jobject thisObj,
@@ -24,7 +39,7 @@ JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_initialize(JNIEnv* je
 		return (jboolean) false;
 	}
 
-	usbtv = new UsbTvDriver(jenv, thisObj, (int)fd, (int)isoEndpoint, (int)maxIsoPacketSize,
+	usbtv = new UsbTvDriver(javaVm, thisObj, (int)fd, (int)isoEndpoint, (int)maxIsoPacketSize,
 	                        (int)input, (int)norm, (int)scanType);
 
 

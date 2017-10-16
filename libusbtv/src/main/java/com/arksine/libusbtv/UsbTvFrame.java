@@ -14,7 +14,6 @@ public class UsbTvFrame {
     private final UsbTv.ScanType mScanType;
     private final UsbTv.TvNorm mTvNorm;
 
-
     public UsbTvFrame(byte[] frame, int width, int height, int frameId,
                       UsbTv.ScanType scan, UsbTv.TvNorm norm) {
         mFrame = frame;
@@ -23,6 +22,7 @@ public class UsbTvFrame {
         mFrameId = frameId;
         mScanType = scan;
         mTvNorm = norm;
+
 
     }
 

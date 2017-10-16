@@ -8,6 +8,18 @@
 #include "usbtv_definitions.h"
 #include "AndroidUsbDevice.h"
 #include <pthread.h>
+#include "JavaCallback.h"
+
+class UsbTvDriver;
+
+namespace Driver {
+	struct ThreadContext {
+		UsbTvDriver*    usbtv;
+		JavaCallback*   callback;
+		bool*           useCallback;
+		bool*           shouldRender;
+	};
+}
 
 class UsbTvDriver {
 private:
@@ -43,13 +55,17 @@ private:
 	bool        _secondFrame;
 
 	// Frame Process variables
-	ThreadContext*      _frameProcessContext;
-	UsbTvFrame*         _processFrame;    // The current frame being processed
-	pthread_t*          _frameProcessThread;
-	pthread_mutex_t     _frameProcessMutex;
-	pthread_cond_t      _frameReadyCond;
-	bool                _frameWait;
+	Driver::ThreadContext*  _frameProcessContext;
+	UsbTvFrame*             _processFrame;    // The current frame being processed
+	bool                    _processThreadRunning;
+	pthread_t               _frameProcessThread;
+	pthread_mutex_t         _frameProcessMutex;
+	pthread_cond_t          _frameReadyCond;
+	bool                    _frameWait;
 
+
+	uint32_t    _droppedFrameCounter;
+	uint32_t    _incompleteFrameCounter;
 
 	/* TODO: Audio Members */
 
@@ -64,16 +80,11 @@ private:
 	void processPacket(__be32* packet);
 	void packetToProgressiveFrame(uint8_t* packet, uint32_t packetNo);
 	void packetToInterleavedFrame(uint8_t* packet, uint32_t packetNo, bool isOdd);
+	void checkFinishedFrame(bool isOdd);
 	void notifyFrameComplete();
 
 public:
-	struct ThreadContext {
-		UsbTvDriver*    usbtv;
-		JavaCallback*   callback;
-		bool*           useCallback;
-		bool*           shouldRender;
-	};
-	UsbTvDriver(JNIEnv *env, jobject thisObj, int fd, int isoEndpoint, int maxIsoPacketSize,
+	UsbTvDriver(JavaVM *jvm, jobject thisObj, int fd, int isoEndpoint, int maxIsoPacketSize,
 	            int input, int norm, int scanType);
 	~UsbTvDriver();
 

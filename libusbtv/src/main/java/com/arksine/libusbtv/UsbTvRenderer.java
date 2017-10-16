@@ -1,63 +1,92 @@
 package com.arksine.libusbtv;
 
 
+import android.content.Context;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
+import android.os.Message;
 import android.os.Process;
 import android.renderscript.Allocation;
 import android.renderscript.Element;
 import android.renderscript.RenderScript;
+import android.view.Surface;
+
+import timber.log.Timber;
 
 /**
  * Created by Eric on 10/7/2017.
  */
 
-public class UsbTvRenderer extends Handler {
+public class UsbTvRenderer {
 
-    UsbTvRenderer() {
+    private Handler mRenderHandler;
+    private Surface mRenderSurface;
+    private RenderScript mRs;
+    private Allocation mInputAllocation = null;
+    private Allocation mOutputAllocation = null;
+    private ScriptC_ConvertYUYV mConvertKernel;
+    private int currentFrameSize = 0;
 
+    UsbTvRenderer(Context context, Surface surface) {
+        HandlerThread renderThread = new HandlerThread("Render Thread");
+        renderThread.start();
+        mRenderHandler = new Handler(renderThread.getLooper(), mRenderHandlerCallback);
+        mRs = RenderScript.create(context);
+        mConvertKernel = new ScriptC_ConvertYUYV(mRs);
     }
 
     public void processFrame(UsbTvFrame frame) {
-
+        Message msg = mRenderHandler.obtainMessage();
+        msg.obj = frame;
+        mRenderHandler.sendMessage(msg);
     }
-/*  TODO: fix and implement
-    private void initRenderScript () {
-        if (mRsInitialized.compareAndSet(false, true)) {
-            // Setup the handler
-            HandlerThread renderThread = new HandlerThread("Render Thread",
-                    Process.THREAD_PRIORITY_DISPLAY);
-            renderThread.start();
-            mRenderHandler = new Handler(renderThread.getLooper(), mRenderHandlerCallback);
 
-            mRs = RenderScript.create(mContext);
-            Element inputElement = Element.U8_4(mRs);
-            Element outputElement = Element.RGBA_8888(mRs);
-            int frameSize;
-            switch (mFrameInfo.getScanType()) {
-                case INTERLEAVED:
-                    frameSize = mFrameInfo.getFrameSizeInBytes();
-                    break;
-                case PROGRESSIVE:
-                    frameSize = mFrameInfo.getFrameSizeInBytes() / 2;
-                    break;
-                case DISCARD:
-                    frameSize = mFrameInfo.getFrameSizeInBytes() / 2;
-                    break;
-                default:
-                    frameSize = mFrameInfo.getFrameSizeInBytes();
-            }
-            int inputSize = frameSize / 4;
-            int outputSize = inputSize * 2;
-            mInputFrameAlloc = Allocation.createSized(mRs, inputElement, inputSize);
-            mOutputFrameAlloc = Allocation.createSized(mRs, outputElement, outputSize,
-                    Allocation.USAGE_IO_OUTPUT | Allocation.USAGE_SCRIPT);
-            mConvertKernel = new ScriptC_ConvertYUYV(mRs);
-            mConvertKernel.set_output(mOutputFrameAlloc);
+    public void setSurface(Surface surface) {
+        mRenderSurface = surface;
+        if (mOutputAllocation != null && mRenderSurface != null) {
+            mOutputAllocation.setSurface(mRenderSurface);
         }
     }
-*/
 
-    //  public UsbTvRenderer getRenderer(Context context, FrameInfo info) {}
+    private final Handler.Callback mRenderHandlerCallback = new Handler.Callback() {
+        @Override
+        public boolean handleMessage(Message message) {
+            UsbTvFrame frame = (UsbTvFrame) message.obj;
+
+            // Copy frame to input allocaton
+            byte[] buf = frame.getFrameBuf();
+
+            if (currentFrameSize != buf.length) {
+                currentFrameSize = buf.length;
+                initAllocations();
+                // Drop this frame
+                return true;
+            }
+
+            mInputAllocation.copyFromUnchecked(buf);
+
+            mConvertKernel.forEach_convertFromYUYV(mInputAllocation);
+            mOutputAllocation.ioSend();  // Send output frame to surface
+
+            return true;
+        }
+    };
+
+    private void initAllocations () {
+        Element inputElement = Element.U8_4(mRs);
+        Element outputElement = Element.RGBA_8888(mRs);
+        int inputSize = currentFrameSize / 4;
+        int outputSize = inputSize * 2;
+        mInputAllocation = Allocation.createSized(mRs, inputElement, inputSize);
+        mOutputAllocation = Allocation.createSized(mRs, outputElement, outputSize,
+                Allocation.USAGE_IO_OUTPUT | Allocation.USAGE_SCRIPT);
+
+        if (mRenderSurface != null) {
+            mOutputAllocation.setSurface(mRenderSurface);
+        }
+        mConvertKernel.set_output(mOutputAllocation);
+
+    }
 
 }
