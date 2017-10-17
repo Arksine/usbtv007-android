@@ -1,5 +1,6 @@
 package com.arksine.exampleapp;
 
+import android.graphics.PixelFormat;
 import android.hardware.usb.UsbDevice;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
@@ -34,11 +35,11 @@ public class MainActivity extends AppCompatActivity {
     private IUsbTvDriver mTestDriver;
     private UsbTvRenderer mRenderer = null;
 
-    private UsbTv.FrameCallback mFrameCallback = new UsbTv.FrameCallback() {
+    private UsbTv.onFrameReceivedListener mOnFrameReceivedListener = new UsbTv.onFrameReceivedListener() {
         @Override
         public void onFrameReceived(UsbTvFrame frame) {
             if (mRenderer != null) {
-        //        mRenderer.processFrame(frame);
+                mRenderer.processFrame(frame);
             }
         }
     };
@@ -50,10 +51,14 @@ public class MainActivity extends AppCompatActivity {
             synchronized (CAM_LOCK) {
                 mTestDriver = driver;
                 if (mTestDriver != null) {
-                    mTestDriver.setFrameCallback(mFrameCallback);
+                    mTestDriver.setFrameCallback(mOnFrameReceivedListener);
                     if (mPreviewSurface != null) {
                         mIsStreaming.set(true);
-                        mRenderer.setSurface(mPreviewSurface);
+                        if (mRenderer == null) {
+                            mRenderer = UsbTv.getRenderer(getApplicationContext(), mPreviewSurface);
+                        } else {
+                            mRenderer.setSurface(mPreviewSurface);
+                        }
                         mTestDriver.startStreaming();
                     }
                 }
@@ -63,6 +68,11 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onClose() {
             Timber.i("UsbTv Device Closed");
+
+            if (mRenderer != null) {
+                mRenderer.stopRenderer();
+            }
+
             if (mPreviewSurface != null) {
                 mPreviewSurface.release();
             }
@@ -86,11 +96,14 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        mRenderer = UsbTv.getRenderer(getApplicationContext(), mPreviewSurface);
         mRootLayout = (FrameLayout) findViewById(R.id.activity_main);
         mCameraView = (SurfaceView) findViewById(R.id.camera_view);
 
         mSurfaceHolder = mCameraView.getHolder();
+        // TODO: need to set Fixed size according to frame width and frame height.  I'm gonna
+        // Need a way to fetch frame info without getting an actual frame
+        mSurfaceHolder.setFixedSize(720, 240);
+        mSurfaceHolder.setFormat(PixelFormat.RGBA_8888);
         mSurfaceHolder.addCallback(mCameraViewCallback);
 
         ArrayList<UsbDevice> devList = UsbTv.enumerateUsbtvDevices(this);
@@ -132,9 +145,16 @@ public class MainActivity extends AppCompatActivity {
             Timber.v("Camera surfaceChanged:");
             mPreviewSurface = holder.getSurface();
             synchronized (CAM_LOCK) {
-                if (mTestDriver!= null & mIsStreaming.compareAndSet(false, true)) {
-                    mRenderer.setSurface(mPreviewSurface);
-                    mTestDriver.startStreaming();
+                if (mTestDriver!= null) {
+                    if (mRenderer == null) {
+                        mRenderer = UsbTv.getRenderer(getApplicationContext(), mPreviewSurface);
+                    } else {
+                        mRenderer.setSurface(mPreviewSurface);
+                    }
+                    if (mIsStreaming.compareAndSet(false, true)) {
+                        mTestDriver.startStreaming();
+                    }
+
                 }
             }
         }

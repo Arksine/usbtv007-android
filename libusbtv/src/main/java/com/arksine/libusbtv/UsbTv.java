@@ -45,7 +45,7 @@ public class UsbTv {
         void onError();
     }
 
-    public interface FrameCallback {
+    public interface onFrameReceivedListener {
         void onFrameReceived(UsbTvFrame frame);
     }
 
@@ -168,7 +168,7 @@ public class UsbTv {
     private ScanType mScanType;
 
     private DriverCallbacks mDriverCallbacks;
-    private FrameCallback mFrameCallback = null;
+    private onFrameReceivedListener mOnFrameReceivedListener = null;
     private Surface mDrawingSurface = null;
     private Handler mNativeHander;
 
@@ -268,8 +268,10 @@ public class UsbTv {
     }
 
     public static UsbTvRenderer getRenderer(Context context, Surface surface) {
-        if (mRenderer == null) {
+        if (mRenderer == null || !mRenderer.isAlive()) {
             mRenderer = new UsbTvRenderer(context, surface);
+        } else {
+            mRenderer.setSurface(surface);
         }
         return mRenderer;
     }
@@ -410,9 +412,9 @@ public class UsbTv {
 
     // Callback From JNI
     public void frameCallback(byte[] frame, int width, int height, int id) {
-        if (mFrameCallback != null) {
+        if (mOnFrameReceivedListener != null) {
             UsbTvFrame tvFrame = new UsbTvFrame(frame, width, height, id, mScanType, mNorm);
-            mFrameCallback.onFrameReceived(tvFrame);
+            mOnFrameReceivedListener.onFrameReceived(tvFrame);
         }
     }
 
@@ -474,7 +476,7 @@ public class UsbTv {
         }
 
         @Override
-        public void setFrameCallback(FrameCallback cb) {
+        public void setFrameCallback(onFrameReceivedListener cb) {
             Message msg = mNativeHander.obtainMessage(NativeAction.SET_CALLBACK.ordinal(), cb);
             mNativeHander.sendMessage(msg);
         }
@@ -570,8 +572,8 @@ public class UsbTv {
                     setSurface(surface);
                     break;
                 case SET_CALLBACK:
-                    mFrameCallback = (FrameCallback) message.obj;
-                    boolean use = mFrameCallback != null;
+                    mOnFrameReceivedListener = (onFrameReceivedListener) message.obj;
+                    boolean use = mOnFrameReceivedListener != null;
                     useCallback(use);
                     break;
                 default:

@@ -10,7 +10,12 @@ import android.os.Process;
 import android.renderscript.Allocation;
 import android.renderscript.Element;
 import android.renderscript.RenderScript;
+import android.renderscript.Type;
 import android.view.Surface;
+
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import timber.log.Timber;
 
@@ -18,28 +23,32 @@ import timber.log.Timber;
  * Created by Eric on 10/7/2017.
  */
 
-public class UsbTvRenderer {
+public class UsbTvRenderer extends Thread {
 
-    private Handler mRenderHandler;
     private Surface mRenderSurface;
     private RenderScript mRs;
     private Allocation mInputAllocation = null;
     private Allocation mOutputAllocation = null;
     private ScriptC_ConvertYUYV mConvertKernel;
     private int currentFrameSize = 0;
+    private AtomicBoolean mThreadRunning = new AtomicBoolean(false);
+
+    private BlockingQueue<UsbTvFrame> mFrameQueue = new ArrayBlockingQueue<UsbTvFrame>(10, true);
 
     UsbTvRenderer(Context context, Surface surface) {
-        HandlerThread renderThread = new HandlerThread("Render Thread");
-        renderThread.start();
-        mRenderHandler = new Handler(renderThread.getLooper(), mRenderHandlerCallback);
+        super("Render Thread");
         mRs = RenderScript.create(context);
         mConvertKernel = new ScriptC_ConvertYUYV(mRs);
+        mRenderSurface = surface;
+
+        this.start();
+
     }
 
     public void processFrame(UsbTvFrame frame) {
-        Message msg = mRenderHandler.obtainMessage();
-        msg.obj = frame;
-        mRenderHandler.sendMessage(msg);
+        if (!mFrameQueue.offer(frame)) {
+            Timber.d("Frame skipped, queue full");
+        }
     }
 
     public void setSurface(Surface surface) {
@@ -49,43 +58,68 @@ public class UsbTvRenderer {
         }
     }
 
-    private final Handler.Callback mRenderHandlerCallback = new Handler.Callback() {
-        @Override
-        public boolean handleMessage(Message message) {
-            UsbTvFrame frame = (UsbTvFrame) message.obj;
+    public void stopRenderer() {
+        if (mThreadRunning.compareAndSet(true, false)) {
+            try {
+                this.join(500);
+            } catch (InterruptedException e) {
+
+            }
+
+            if (this.isAlive()) {
+                this.interrupt();
+            }
+        }
+    }
+
+    @Override
+    public void run() {
+        UsbTvFrame frame;
+        mThreadRunning.set(true);
+        Timber.d("Render Thread Started");
+
+        while(mThreadRunning.get()) {
+            try {
+                frame = mFrameQueue.take();
+            } catch (InterruptedException e) {
+                break;
+            }
 
             // Copy frame to input allocaton
             byte[] buf = frame.getFrameBuf();
 
             if (currentFrameSize != buf.length) {
                 currentFrameSize = buf.length;
-                initAllocations();
+                initAllocations(frame);
                 // Drop this frame
-                return true;
+                continue;
             }
+
 
             mInputAllocation.copyFromUnchecked(buf);
 
             mConvertKernel.forEach_convertFromYUYV(mInputAllocation);
-            mOutputAllocation.ioSend();  // Send output frame to surface
 
-            return true;
+                mOutputAllocation.ioSend();  // Send output frame to surface
         }
-    };
+    }
 
-    private void initAllocations () {
+    private void initAllocations (UsbTvFrame frame) {
         Element inputElement = Element.U8_4(mRs);
-        Element outputElement = Element.RGBA_8888(mRs);
+        Type.Builder outputType = new Type.Builder(mRs, Element.RGBA_8888(mRs));
+        outputType.setX(frame.getWidth());
+        outputType.setY(frame.getHeight());
         int inputSize = currentFrameSize / 4;
-        int outputSize = inputSize * 2;
-        mInputAllocation = Allocation.createSized(mRs, inputElement, inputSize);
-        mOutputAllocation = Allocation.createSized(mRs, outputElement, outputSize,
+
+        mInputAllocation = Allocation.createSized(mRs, inputElement, inputSize, Allocation.USAGE_SCRIPT);
+        mOutputAllocation = Allocation.createTyped(mRs, outputType.create(),
                 Allocation.USAGE_IO_OUTPUT | Allocation.USAGE_SCRIPT);
 
         if (mRenderSurface != null) {
             mOutputAllocation.setSurface(mRenderSurface);
         }
         mConvertKernel.set_output(mOutputAllocation);
+        mConvertKernel.set_width(frame.getWidth());
 
     }
 

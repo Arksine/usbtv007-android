@@ -26,7 +26,7 @@ public abstract class IUsbTvDriver {
     public abstract UsbTv.InputSelection getInputSelection();
 
     public abstract void setDrawingSurface(Surface drawingSurface);
-    public abstract void setFrameCallback(UsbTv.FrameCallback cb);
+    public abstract void setFrameCallback(UsbTv.onFrameReceivedListener cb);
 
     public abstract void setInput(UsbTv.InputSelection input);
     public abstract void setNorm(UsbTv.TvNorm norm);

@@ -2,7 +2,7 @@ package com.arksine.libusbtv;
 
 /**
  * Encapsulates a Frame received from the UsbTv device.  It may be passed back to the user
- * through a FrameCallback, or it will be used to render to a surface
+ * through a onFrameReceivedListener, or it will be used to render to a surface
  */
 
 public class UsbTvFrame {
