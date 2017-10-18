@@ -31,6 +31,7 @@ private:
 	TvNorm      _tvNorm;
 	ScanType    _scanType;
 
+	uint16_t     _framePoolSize;
 	UsbTvFrame** _framePool;
 
 	AndroidUsbDevice*   _usbConnection;
@@ -86,7 +87,7 @@ private:
 
 public:
 	UsbTvDriver(JavaVM *jvm, jobject thisObj, int fd, int isoEndpoint, int maxIsoPacketSize,
-	            int input, int norm, int scanType);
+	            int framePoolSize, int input, int norm, int scanType);
 	~UsbTvDriver();
 
 	bool isInitialized() { return _initalized;}

@@ -13,6 +13,7 @@ void *iso_read_thread(void* context);
 AndroidUsbDevice::AndroidUsbDevice(int fd, IsonchronousCallback callback) {
 	_fileDescriptor = fd;
 	_isoMutex = PTHREAD_MUTEX_INITIALIZER;
+	_isoUrbPool = nullptr;
 	_isoTransfersAllocated = 0;
 	_isoTransfersSubmitted = 0;
 	_isoEndpoint = 0;
@@ -121,7 +122,7 @@ int AndroidUsbDevice::bulkTransfer(uint8_t endpoint, unsigned int length, unsign
 
 int AndroidUsbDevice::bulkRead(uint8_t endpoint, unsigned int length, unsigned int timeout,
                                void *data) {
-	if (data == NULL) {
+	if (data == nullptr) {
 		LOGE("Cannot bulk read into a null buffer");
 		return -1;
 	}
@@ -186,7 +187,7 @@ int AndroidUsbDevice::bulkWrite(uint8_t endpoint, unsigned int length, unsigned 
 			LOGI("IOCTL Bulk Transfer Error, code %d", ret);
 			return -1;
 		}
-	} else if (data == NULL) {
+	} else if (data == nullptr) {
 		LOGE("Cannot bulk write from a null buffer");
 		return -1;
 	}
@@ -245,7 +246,7 @@ bool AndroidUsbDevice::initIsoTransfers(uint8_t numTransfers, uint8_t endpoint,
 
 	for (int i = 0; i < numTransfers; i++) {
 
-		if (!submitIsoUrb(_isonchronousUrbs[i], endpoint, packetLength, numberOfPackets)) {
+		if (!submitIsoUrb(_isoUrbPool[i], endpoint, packetLength, numberOfPackets)) {
 			break;
 		}
 
@@ -341,7 +342,7 @@ bool AndroidUsbDevice::discardIsoTransfers() {
 	bool success = true;
 
 	for (int i = 0; i < _isoTransfersSubmitted; i++) {
-		ret = ioctl(_fileDescriptor, USBDEVFS_DISCARDURB, _isonchronousUrbs[i]);
+		ret = ioctl(_fileDescriptor, USBDEVFS_DISCARDURB, _isoUrbPool[i]);
 
 		if (ret < 0) {
 			LOGE("Error discarding urb index: %d", i);
@@ -360,13 +361,16 @@ void AndroidUsbDevice::freeIsoTransfers() {
 	if (_isoTransfersSubmitted > 0) {
 		discardIsoTransfers();
 	}
-
-	for (int i = 0; i < _isoTransfersAllocated; i++) {
-		if (_isonchronousUrbs[i] != nullptr) {
-			free(_isonchronousUrbs[i]->buffer);
-			free(_isonchronousUrbs[i]);
-			_isonchronousUrbs[i] = nullptr;
+	if (_isoUrbPool != nullptr) {
+		for (int i = 0; i < _isoTransfersAllocated; i++) {
+			if (_isoUrbPool[i] != nullptr) {
+				free(_isoUrbPool[i]->buffer);
+				free(_isoUrbPool[i]);
+				_isoUrbPool[i] = nullptr;
+			}
 		}
+		delete [] _isoUrbPool;
+		_isoUrbPool = nullptr;
 	}
 
 	_isoTransfersAllocated = 0;
@@ -374,14 +378,20 @@ void AndroidUsbDevice::freeIsoTransfers() {
 
 void AndroidUsbDevice::allocateIsoTransfers(uint32_t packetLength, uint8_t numberOfPackets,
                                             uint8_t numTransfers) {
-	size_t urbSize = sizeof(usbdevfs_urb) + (numberOfPackets * sizeof(usbdevfs_iso_packet_desc));
-	size_t isoBufferSize = packetLength * numberOfPackets;
-	LOGD("Urb Size: %d\n Buffer Size: %d", (int)urbSize, (int)isoBufferSize);
-	for (int i = 0; i < numTransfers; i++) {
-		_isonchronousUrbs[i] = (usbdevfs_urb*)malloc(urbSize);
-		_isonchronousUrbs[i]->buffer = malloc(size_t(isoBufferSize));
+	if (_isoUrbPool == nullptr) {
+		size_t urbSize =
+				sizeof(usbdevfs_urb) + (numberOfPackets * sizeof(usbdevfs_iso_packet_desc));
+		size_t isoBufferSize = packetLength * numberOfPackets;
+		LOGD("Urb Size: %d\n Buffer Size: %d", (int) urbSize, (int) isoBufferSize);
+
+		_isoUrbPool = new usbdevfs_urb*[numTransfers];
+
+		for (int i = 0; i < numTransfers; i++) {
+			_isoUrbPool[i] = (usbdevfs_urb *) malloc(urbSize);
+			_isoUrbPool[i]->buffer = malloc(size_t(isoBufferSize));
+		}
+		_isoTransfersAllocated = numTransfers;
 	}
-	_isoTransfersAllocated = numTransfers;
 }
 
 /**
@@ -395,7 +405,7 @@ bool AndroidUsbDevice::startIsoAsyncRead() {
 	pthread_mutex_lock(&_isoMutex);
 	if (!_isoThreadRunning) {
 		_isoThreadRunning = true;
-		ret = pthread_create(&_isoThread, NULL, iso_read_thread, (void *)_isoThreadCtx);
+		ret = pthread_create(&_isoThread, nullptr, iso_read_thread, (void *)_isoThreadCtx);
 		if (ret != 0) {
 			success = false;
 			_isoThreadRunning = false;
@@ -433,14 +443,14 @@ void AndroidUsbDevice::stopIsoAsyncRead() {
 usbdevfs_urb* AndroidUsbDevice::isoReadSync(bool wait) {
 	int req = wait ? USBDEVFS_REAPURB : USBDEVFS_REAPURBNDELAY;
 
-	usbdevfs_urb* urb = NULL;
+	usbdevfs_urb* urb = nullptr;
 	int ret = ioctl(_fileDescriptor, req, &urb);
 	if (ret < 0) {
-		return NULL;
+		return nullptr;
 	} else if (urb->usercontext == this) {
 		return urb;
 	} else {
-		return NULL;
+		return nullptr;
 	}
 }
 

@@ -11,6 +11,7 @@ import android.renderscript.Allocation;
 import android.renderscript.Element;
 import android.renderscript.RenderScript;
 import android.renderscript.Type;
+import android.support.annotation.NonNull;
 import android.view.Surface;
 
 import java.util.concurrent.ArrayBlockingQueue;
@@ -20,29 +21,71 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import timber.log.Timber;
 
 /**
- * Created by Eric on 10/7/2017.
+ * TODO: Now that I track deviceparams use them to initialize allocations rather
+ * than doing so when a frame is recd
  */
 
-public class UsbTvRenderer extends Thread {
+public class UsbTvRenderer {
 
+    private Thread mRenderThread;
     private Surface mRenderSurface;
     private RenderScript mRs;
     private Allocation mInputAllocation = null;
     private Allocation mOutputAllocation = null;
     private ScriptC_ConvertYUYV mConvertKernel;
-    private int currentFrameSize = 0;
     private AtomicBoolean mThreadRunning = new AtomicBoolean(false);
 
     private BlockingQueue<UsbTvFrame> mFrameQueue = new ArrayBlockingQueue<UsbTvFrame>(10, true);
 
-    UsbTvRenderer(Context context, Surface surface) {
-        super("Render Thread");
+    private final Runnable mRenderRunnable = new Runnable() {
+        @Override
+        public void run() {
+            UsbTvFrame frame;
+            mThreadRunning.set(true);
+            Timber.d("Render Thread Started");
+
+            //  TODO: profiling vars can be removed after testing
+            long renderStartTime = 0;
+            int frameCount = 60;
+
+            while(mThreadRunning.get()) {
+                try {
+                    frame = mFrameQueue.take();
+                } catch (InterruptedException e) {
+                    break;
+                }
+
+                renderStartTime = System.currentTimeMillis();
+
+                // Copy frame to input allocaton
+                byte[] buf = frame.getFrameBuf();
+
+                if (buf.length != mInputAllocation.getBytesSize()) {
+                    Timber.e("Incoming frame buffer size, does not match input allocation size");
+                    mThreadRunning.set(false);
+                    return;
+                }
+
+                mInputAllocation.copyFromUnchecked(buf);
+
+                mConvertKernel.forEach_convertFromYUYV(mInputAllocation);
+                mOutputAllocation.ioSend();  // Send output frame to surface
+
+                if (frameCount >= 60) {
+                    frameCount = 0;
+                    Timber.d("Frame Render Time: %d ms", System.currentTimeMillis() - renderStartTime);
+                } else {
+                    frameCount++;
+                }
+            }
+        }
+    };
+
+    UsbTvRenderer(@NonNull Context context, Surface surface) {
+
         mRs = RenderScript.create(context);
         mConvertKernel = new ScriptC_ConvertYUYV(mRs);
         mRenderSurface = surface;
-
-        this.start();
-
     }
 
     public void processFrame(UsbTvFrame frame) {
@@ -58,58 +101,39 @@ public class UsbTvRenderer extends Thread {
         }
     }
 
+    public void startRenderer(DeviceParams params) {
+        if (!mThreadRunning.get()) {
+            initAllocations(params);
+            mRenderThread = new Thread(mRenderRunnable, "Render Thread");
+            mRenderThread.start();
+        }
+    }
+
     public void stopRenderer() {
         if (mThreadRunning.compareAndSet(true, false)) {
             try {
-                this.join(500);
+                mRenderThread.join(500);
             } catch (InterruptedException e) {
-
+                Timber.d(e);
             }
 
-            if (this.isAlive()) {
-                this.interrupt();
+            if (mRenderThread.isAlive()) {
+                mRenderThread.interrupt();
             }
         }
     }
 
-    @Override
-    public void run() {
-        UsbTvFrame frame;
-        mThreadRunning.set(true);
-        Timber.d("Render Thread Started");
-
-        while(mThreadRunning.get()) {
-            try {
-                frame = mFrameQueue.take();
-            } catch (InterruptedException e) {
-                break;
-            }
-
-            // Copy frame to input allocaton
-            byte[] buf = frame.getFrameBuf();
-
-            if (currentFrameSize != buf.length) {
-                currentFrameSize = buf.length;
-                initAllocations(frame);
-                // Drop this frame
-                continue;
-            }
-
-
-            mInputAllocation.copyFromUnchecked(buf);
-
-            mConvertKernel.forEach_convertFromYUYV(mInputAllocation);
-
-                mOutputAllocation.ioSend();  // Send output frame to surface
-        }
+    public boolean isRunning() {
+        return mThreadRunning.get();
     }
 
-    private void initAllocations (UsbTvFrame frame) {
+
+    private void initAllocations (DeviceParams params) {
         Element inputElement = Element.U8_4(mRs);
         Type.Builder outputType = new Type.Builder(mRs, Element.RGBA_8888(mRs));
-        outputType.setX(frame.getWidth());
-        outputType.setY(frame.getHeight());
-        int inputSize = currentFrameSize / 4;
+        outputType.setX(params.getFrameWidth());
+        outputType.setY(params.getFrameHeight());
+        int inputSize = params.getFrameSizeInBytes() / 4;
 
         mInputAllocation = Allocation.createSized(mRs, inputElement, inputSize, Allocation.USAGE_SCRIPT);
         mOutputAllocation = Allocation.createTyped(mRs, outputType.create(),
@@ -119,7 +143,7 @@ public class UsbTvRenderer extends Thread {
             mOutputAllocation.setSurface(mRenderSurface);
         }
         mConvertKernel.set_output(mOutputAllocation);
-        mConvertKernel.set_width(frame.getWidth());
+        mConvertKernel.set_width(params.getFrameWidth());
 
     }
 

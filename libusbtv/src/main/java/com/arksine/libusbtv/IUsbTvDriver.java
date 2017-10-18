@@ -23,7 +23,7 @@ public abstract class IUsbTvDriver {
     public abstract void startStreaming();
     public abstract void stopStreaming();
 
-    public abstract UsbTv.InputSelection getInputSelection();
+    public abstract DeviceParams getDeviceParams();
 
     public abstract void setDrawingSurface(Surface drawingSurface);
     public abstract void setFrameCallback(UsbTv.onFrameReceivedListener cb);

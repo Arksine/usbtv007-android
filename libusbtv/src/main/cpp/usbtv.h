@@ -18,6 +18,7 @@ JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_initialize(JNIEnv* je
                                                                       jint fd,
                                                                       jint isoEndpoint,
                                                                       jint maxIsoPacketSize,
+                                                                      jint framePoolSize,
                                                                       jint input,
                                                                       jint norm,
                                                                       jint scanType);

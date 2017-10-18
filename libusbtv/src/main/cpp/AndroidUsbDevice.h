@@ -11,8 +11,7 @@
 #include <linux/usb/ch9.h>
 #include <pthread.h>
 #include <functional>
-// TODO: In the future I should dynamically allocate isoc array with a size provided by user
-#define USBTV_ISOC_TRANSFERS	16
+
 
 #define MAX_USBFS_BULK_RETRIES 5
 // TODO: See if I can find the max bulk size in one of the headers
@@ -49,7 +48,7 @@ private:
 	UsbDevice::ThreadContext*   _isoThreadCtx;
 	pthread_t                   _isoThread;
 	pthread_mutex_t             _isoMutex;
-	usbdevfs_urb*               _isonchronousUrbs[USBTV_ISOC_TRANSFERS];
+	usbdevfs_urb**              _isoUrbPool;
 
 
 

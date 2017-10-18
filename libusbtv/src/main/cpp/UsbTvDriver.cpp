@@ -9,13 +9,15 @@
 void *frameProcessThread(void* context);
 
 UsbTvDriver::UsbTvDriver(JavaVM *jvm, jobject thisObj, int fd, int isoEndpoint,
-                         int maxIsoPacketSize, int input, int norm, int scanType) {
+                         int maxIsoPacketSize, int framePoolSize,
+                         int input, int norm, int scanType) {
 
 	_initalized = false;
 	_renderSurface = nullptr;
 	_shouldRender = false;
 	_streamActive = false;
 	_framePool = nullptr;
+	_framePoolSize = (uint16_t)framePoolSize;
 
 	if (!setTvNorm(norm)){
 		return;
@@ -383,13 +385,13 @@ bool UsbTvDriver::setRegisters(const uint16_t regs[][2] , int size ) {
  */
 void UsbTvDriver::allocateFramePool() {
 	if (_framePool == nullptr) {
-		_framePool = new UsbTvFrame*[USBTV_FRAME_POOL_SIZE];
+		_framePool = new UsbTvFrame*[_framePoolSize];
 		uint32_t bufferheight = (_scanType == ScanType::INTERLEAVED) ? _frameHeight :
 		                        uint32_t(_frameHeight / 2);
 		size_t buffersize = _frameWidth * bufferheight * 2;  // width * height * bytes per pixel
 
 		// init frame pool
-		for (int i = 0; i < USBTV_FRAME_POOL_SIZE; i++) {
+		for (int i = 0; i < _framePoolSize; i++) {
 			_framePool[i] = new UsbTvFrame;
 			_framePool[i]->buffer = malloc(buffersize);
 			_framePool[i]->bufferSize = (uint32_t) buffersize;
@@ -406,7 +408,7 @@ void UsbTvDriver::allocateFramePool() {
  */
 void UsbTvDriver::freeFramePool() {
 	if (_framePool!= nullptr && !_streamActive) {
-		for (int i = 0; i < USBTV_FRAME_POOL_SIZE; i++) {
+		for (int i = 0; i < _framePoolSize; i++) {
 			if (_framePool[i]->lock.test_and_set(std::memory_order_acquire)) {
 				LOGD("frame index %d still has a lock when attempting to free", i);
 			}
@@ -443,7 +445,7 @@ UsbTvFrame* UsbTvDriver::fetchFrameFromPool() {
 		index++;
 		expected = false;
 
-		if (index >= USBTV_FRAME_POOL_SIZE) {
+		if (index >= _framePoolSize) {
 			index = 0;
 		}
 	}
@@ -705,6 +707,8 @@ void *frameProcessThread(void* context) {
 	while (*(ctx->threadRunning)) {
 		frame = usbtv->getFrame();
 
+		// TODO: I need to profile the time it takes to start a frame
+
 		if (frame == nullptr) {
 			continue;
 		}
@@ -714,10 +718,9 @@ void *frameProcessThread(void* context) {
 		}
 
 		if (*(ctx->shouldRender)) {
-			// TODO: call render frame
+			// TODO: call render frame : WILL PROBABLY NOT DO THIS, JAVA RENDERER SEEMS FAST ENOUGH
 		}
 
-		// TODO: memset buffer to zeroes?
 		frame->lock.clear(std::memory_order_release);
 
 	}

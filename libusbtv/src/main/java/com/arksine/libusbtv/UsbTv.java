@@ -39,6 +39,8 @@ import timber.log.Timber;
 public class UsbTv {
     public static final boolean DEBUG = true;  // TODO: set to false for release
 
+    private static final int FRAME_POOL_SIZE = 4;
+
     public interface DriverCallbacks {
         void onOpen(IUsbTvDriver driver, boolean status);
         void onClose();
@@ -163,9 +165,7 @@ public class UsbTv {
     private AtomicBoolean mIsOpen = new AtomicBoolean(false);
     private AtomicBoolean mIsStreaming = new AtomicBoolean(false);
 
-    private InputSelection mInput;
-    private TvNorm mNorm;
-    private ScanType mScanType;
+    private DeviceParams mDeviceParams;
 
     private DriverCallbacks mDriverCallbacks;
     private onFrameReceivedListener mOnFrameReceivedListener = null;
@@ -179,13 +179,8 @@ public class UsbTv {
         System.loadLibrary("usbtv");
     }
 
-    public static boolean open(@NonNull UsbDevice dev,@NonNull Context appContext,
-                               @NonNull DriverCallbacks cbs) {
-        return open(dev, appContext, cbs, false);
-    }
-
     public static boolean open(@NonNull UsbDevice dev, @NonNull Context appContext,
-                               @NonNull DriverCallbacks cbs, boolean userManagedReceiver) {
+                               @NonNull DeviceParams params) {
         synchronized (OPEN_LOCK) {
 
             // Check to see if the received USB Device is already open
@@ -211,7 +206,7 @@ public class UsbTv {
             }
 
             // Register Usb Receiver if requested  // TODO: Don't forget to unregister it when mReferenceList is empty
-            if (!userManagedReceiver && !mUsbReceiverRegistered) {
+            if (params.isUsingInternalReceiver() && !mUsbReceiverRegistered) {
                 mUsbReceiverRegistered = true;
                 IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
                 filter.addAction(ACTION_USB_ATTACHED);
@@ -220,7 +215,7 @@ public class UsbTv {
                 Timber.v("Usb Broadcast Receiver Registered");
             }
 
-            UsbTv usbtv = new UsbTv(appContext, dev, cbs);
+            UsbTv usbtv = new UsbTv(appContext, dev, params);
             mReferenceList.add(usbtv);
 
             UsbManager manager = (UsbManager) appContext.getSystemService(Context.USB_SERVICE);
@@ -268,7 +263,7 @@ public class UsbTv {
     }
 
     public static UsbTvRenderer getRenderer(Context context, Surface surface) {
-        if (mRenderer == null || !mRenderer.isAlive()) {
+        if (mRenderer == null) {
             mRenderer = new UsbTvRenderer(context, surface);
         } else {
             mRenderer.setSurface(surface);
@@ -277,24 +272,17 @@ public class UsbTv {
     }
 
     private UsbTv(@NonNull Context appContext, @NonNull UsbDevice dev,
-                  @NonNull DriverCallbacks driverCbs) {
+                  @NonNull DeviceParams params) {
         mContext = appContext;
         mUsbtvDevice = dev;
-        mDriverCallbacks = driverCbs;
-
-        // TODO: get from shared prefs?
-        mInput = InputSelection.COMPOSITE;
-        mNorm = TvNorm.NTSC;
-        mScanType = ScanType.PROGRESSIVE;
+        mDeviceParams = params;
+        mDriverCallbacks = mDeviceParams.getDriverCallbacks();
 
         // Create HandlerThread and NativeHandler
         HandlerThread nativeThread = new HandlerThread("Native Call Thread");
         nativeThread.start();
         mNativeHander = new Handler(nativeThread.getLooper(), mNativeHandlerCallback);
     }
-
-
-
 
     private boolean initDevice() {
         if (!mHasUsbPermission) {
@@ -349,8 +337,11 @@ public class UsbTv {
         Timber.v("Endpoint description reported max size: %d", ep.getMaxPacketSize());
         int maxPacketSize = calculateMaxEndpointSize(ep.getMaxPacketSize());
 
-       if (!initialize(mUsbtvConnection.getFileDescriptor(), USBTV_VIDEO_ENDPOINT, maxPacketSize,
-               mInput.ordinal(), mNorm.ordinal(), mScanType.ordinal())) {
+       if (!initialize(mUsbtvConnection.getFileDescriptor(),
+               USBTV_VIDEO_ENDPOINT, maxPacketSize, FRAME_POOL_SIZE,
+               mDeviceParams.getInputSelection().ordinal(),
+               mDeviceParams.getTvNorm().ordinal(),
+               mDeviceParams.getScanType().ordinal())) {
            mUsbtvConnection.close();
            return false;
        }
@@ -413,14 +404,15 @@ public class UsbTv {
     // Callback From JNI
     public void frameCallback(byte[] frame, int width, int height, int id) {
         if (mOnFrameReceivedListener != null) {
-            UsbTvFrame tvFrame = new UsbTvFrame(frame, width, height, id, mScanType, mNorm);
+            UsbTvFrame tvFrame = new UsbTvFrame(frame, width, height, id,
+                    mDeviceParams.getScanType(), mDeviceParams.getTvNorm());
             mOnFrameReceivedListener.onFrameReceived(tvFrame);
         }
     }
 
     // Native Methods
     private native boolean initialize(int fileDescriptor, int isoEndpoint, int maxIsoPacketSize,
-                                      int input, int norm, int scantype);
+                                      int framePoolSize, int input, int norm, int scantype);
     private native void dispose();
     private native void setSurface(Surface renderSurface);
     private native void useCallback(boolean shouldUse);
@@ -464,8 +456,8 @@ public class UsbTv {
         }
 
         @Override
-        public InputSelection getInputSelection() {
-            return mInput;
+        public DeviceParams getDeviceParams() {
+            return mDeviceParams;
         }
 
         @Override
@@ -544,20 +536,26 @@ public class UsbTv {
                     mIsStreaming.set(false);
                     break;
                 case SET_INPUT:
-                    mInput = (InputSelection) message.obj;
-                    if (!setInput(mInput.ordinal())) {
+                    mDeviceParams = new DeviceParams.Builder(mDeviceParams)
+                            .setInput((InputSelection) message.obj)
+                            .build();
+                    if (!setInput(mDeviceParams.getInputSelection().ordinal())) {
                         mDriverCallbacks.onError();
                     }
                     break;
                 case SET_NORM:
-                    mNorm = (TvNorm) message.obj;
-                    if (!setTvNorm(mNorm.ordinal())) {
+                    mDeviceParams = new DeviceParams.Builder(mDeviceParams)
+                            .setTvNorm((TvNorm)message.obj)
+                            .build();
+                    if (!setTvNorm(mDeviceParams.getTvNorm().ordinal())) {
                         mDriverCallbacks.onError();
                     }
                     break;
                 case SET_SCANTYPE:
-                    mScanType = (ScanType) message.obj;
-                    if (!setScanType(mScanType.ordinal())) {
+                    mDeviceParams = new DeviceParams.Builder(mDeviceParams)
+                            .setScanType((ScanType)message.obj)
+                            .build();
+                    if (!setScanType(mDeviceParams.getScanType().ordinal())) {
                         mDriverCallbacks.onError();
                     }
                     break;

@@ -31,6 +31,7 @@ JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_initialize(JNIEnv* je
                                                                       jint fd,
                                                                       jint isoEndpoint,
                                                                       jint maxIsoPacketSize,
+                                                                      jint framePoolSize,
                                                                       jint input,
                                                                       jint norm,
                                                                       jint scanType) {
@@ -40,7 +41,7 @@ JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_initialize(JNIEnv* je
 	}
 
 	usbtv = new UsbTvDriver(javaVm, thisObj, (int)fd, (int)isoEndpoint, (int)maxIsoPacketSize,
-	                        (int)input, (int)norm, (int)scanType);
+	                        (int)framePoolSize, (int)input, (int)norm, (int)scanType);
 
 
 	return (jboolean)true;
