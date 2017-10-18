@@ -45,8 +45,24 @@ public class UsbTvRenderer {
             Timber.d("Render Thread Started");
 
             //  TODO: profiling vars can be removed after testing
-            long renderStartTime = 0;
-            int frameCount = 60;
+            /*
+            *   Update:  Profile testing on an Xperia Z3 running lollipop show that it typically takes around
+            *   1 ms to copy, convert, and call iosend on a half frame (720 x 240), with spikes as
+            *   high as 9 ms.  That is pretty good, I doubt that an interleaved frame would take
+            *   much longer, which leaves open the possibility for advanced deinterlacing
+            *   algorithms.
+            *
+            *   Tests on a Samsung Galaxy Tab Pro 8.4 running Lineage OS 14.1 dont fare as well.
+            *   Render times are as low as 2ms, but spike to 30ms.  This causes frame drops.
+            *   The OS can't load the adreno renderscript library, so renderscript relies on a
+             *  fallback.  This is probably a bug in Lineage OS and it is the
+             *  likely cause of poor rendering performance.
+             *
+             */
+            long renderTime;
+            long highTime = 0;
+            long lowTime = 1000;
+            int frameCount = 0;
 
             while(mThreadRunning.get()) {
                 try {
@@ -55,7 +71,7 @@ public class UsbTvRenderer {
                     break;
                 }
 
-                renderStartTime = System.currentTimeMillis();
+                renderTime = System.currentTimeMillis();
 
                 // Copy frame to input allocaton
                 byte[] buf = frame.getFrameBuf();
@@ -71,11 +87,19 @@ public class UsbTvRenderer {
                 mConvertKernel.forEach_convertFromYUYV(mInputAllocation);
                 mOutputAllocation.ioSend();  // Send output frame to surface
 
-                if (frameCount >= 60) {
+                /*
+                Profile every 120 frames (Every two seconds)
+                 */
+                renderTime = System.currentTimeMillis() - renderTime;
+                highTime = (renderTime > highTime) ? renderTime : highTime;
+                lowTime = (renderTime < lowTime) ? renderTime : lowTime;
+                frameCount++;
+                if (frameCount >= 120) {
                     frameCount = 0;
-                    Timber.d("Frame Render Time: %d ms", System.currentTimeMillis() - renderStartTime);
-                } else {
-                    frameCount++;
+                    Timber.d("Last 120 Frames - High Render Time: %d ms\nLow Render Time: %d ms", highTime, lowTime);
+                    highTime = 0;
+                    lowTime  = 1000;
+
                 }
             }
         }

@@ -402,12 +402,18 @@ public class UsbTv {
     }
 
     // Callback From JNI
+    // TODO: Replace the
     public void frameCallback(byte[] frame, int width, int height, int id) {
         if (mOnFrameReceivedListener != null) {
             UsbTvFrame tvFrame = new UsbTvFrame(frame, width, height, id,
                     mDeviceParams.getScanType(), mDeviceParams.getTvNorm());
             mOnFrameReceivedListener.onFrameReceived(tvFrame);
         }
+    }
+
+    // Called from JNI.  Allows for a shared, pre-allocated frame pool to be accessed.
+    public byte[] getJavaBuffer() {
+        return  null;
     }
 
     // Native Methods

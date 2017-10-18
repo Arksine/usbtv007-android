@@ -6,11 +6,16 @@
 #include "util.h"
 #include <cstdlib>
 
+#if defined(PROFILE_FRAME) || defined(PROFILE_PACKET)
+#include <chrono>
+#endif
+
 void *frameProcessThread(void* context);
 
 UsbTvDriver::UsbTvDriver(JavaVM *jvm, jobject thisObj, int fd, int isoEndpoint,
                          int maxIsoPacketSize, int framePoolSize,
-                         int input, int norm, int scanType) {
+                         int input, int norm, int scanType)
+		: _frameProcessQueue((size_t)(framePoolSize - 1)){
 
 	_initalized = false;
 	_renderSurface = nullptr;
@@ -43,11 +48,7 @@ UsbTvDriver::UsbTvDriver(JavaVM *jvm, jobject thisObj, int fd, int isoEndpoint,
 	                                                    std::placeholders::_1));
 
 	_useCallback = false;
-	_processFrame = nullptr;
 	_processThreadRunning = false;
-	_frameProcessMutex = PTHREAD_MUTEX_INITIALIZER;
-	_frameReadyCond = PTHREAD_COND_INITIALIZER;
-	_frameWait = false;
 	_frameProcessContext = new Driver::ThreadContext;
 	_frameProcessContext->usbtv = this;
 	_frameProcessContext->shouldRender = &_shouldRender;
@@ -74,9 +75,6 @@ UsbTvDriver::~UsbTvDriver() {
 	delete _frameProcessContext->callback;
 	delete _frameProcessContext;
 	delete _usbConnection;
-
-	pthread_mutex_destroy(&_frameProcessMutex);
-	pthread_cond_destroy(&_frameReadyCond);
 }
 
 bool UsbTvDriver::startStreaming() {
@@ -205,17 +203,9 @@ void UsbTvDriver::stopStreaming() {
 		// Stop Frame processor thread
 		if (_processThreadRunning) {
 			_processThreadRunning = false;
-			pthread_mutex_lock(&_frameProcessMutex);
-			if (_frameWait) {
-				// Clear lock for process frame and set it to null
-				// so the thread exits
-				if (_processFrame != nullptr) {
-					_processFrame->lock.clear(std::memory_order_release);
-					_processFrame = nullptr;
-				}
-				pthread_cond_signal(&_frameReadyCond);
-			}
-			pthread_mutex_unlock(&_frameProcessMutex);
+			UsbTvFrame* frame = nullptr;
+			// Enqueue a null frame to make sure that the thread exits its loop
+			_frameProcessQueue.enqueue(frame);
 			pthread_join(_frameProcessThread, nullptr);
 		}
 
@@ -223,16 +213,18 @@ void UsbTvDriver::stopStreaming() {
 
 		LOGD("Interface set to zero");
 
+		// Make sure the process queue is empty and all locks have been released
+		UsbTvFrame* frame;
+		while(_frameProcessQueue.try_dequeue(frame)) {
+			if (frame != nullptr) {
+				frame->lock.clear(std::memory_order_release);
+			}
+		}
+
 		// Clear lock for frame that usb was reading into;
 		if (_usbInputFrame != nullptr) {
 			_usbInputFrame->lock.clear(std::memory_order_release);
 			_usbInputFrame = nullptr;
-		}
-
-		// Clear lock for process frame
-		if (_processFrame != nullptr) {
-			_processFrame->lock.clear(std::memory_order_release);
-			_processFrame = nullptr;
 		}
 
 		freeFramePool();
@@ -349,11 +341,9 @@ void UsbTvDriver::setSurface(jobject surface) {
  * @return A completed UsbTvFrame received and parsed from the capture device
  */
 UsbTvFrame* UsbTvDriver::getFrame() {
-	pthread_mutex_lock(&_frameProcessMutex);
-	_frameWait = true;
-	pthread_cond_wait(&_frameReadyCond, &_frameProcessMutex);
-	pthread_mutex_unlock(&_frameProcessMutex);
-	return _processFrame;
+	UsbTvFrame* frame;
+	_frameProcessQueue.wait_dequeue(frame);
+	return frame;
 }
 
 /**
@@ -468,6 +458,7 @@ void UsbTvDriver::onUrbReceived(usbdevfs_urb *urb) {
 			int count = packetLength / USBTV_PACKET_SIZE;
 			for (int j = 0; j < count; j++) {
 				uint8_t* packet = buffer + (j * USBTV_PACKET_SIZE);
+				// TODO: Profile the time it takes to process a packet (in microseconds)
 				processPacket((__be32*) packet);
 			}
 		}
@@ -497,7 +488,7 @@ void UsbTvDriver::processPacket(__be32 *packet) {
 
 		// The code below is to make sure packets are received as expected.  They did not
 		// in java using JNA, which is why I am attempting a Native implementation
-		#ifdef DEBUG_ON
+#if defined(DEBUG_PACKET)
 		if (_currentFrameId != frameId) {
 			LOGD("New Frame Id: %d\nOld Id: %d", frameId, _currentFrameId);
 			_currentFrameId = frameId;
@@ -519,7 +510,7 @@ void UsbTvDriver::processPacket(__be32 *packet) {
 			_packetsDone++;
 		}
 		return;
-		#endif
+#endif
 
 		if (packetNumber >= _packetsPerField) {
 			LOGD("Packet number exceeds packets per field");
@@ -583,16 +574,16 @@ void UsbTvDriver::checkFinishedFrame(bool isOdd) {
 	//  - For interleaved only render after an entire frame is received.
 	switch (_scanType){
 		case ScanType::PROGRESSIVE:
-			notifyFrameComplete();
+			addCompleteFrameToQueue();
 			break;
 		case ScanType::DISCARD:
 			if (isOdd) {
-				notifyFrameComplete();
+				addCompleteFrameToQueue();
 			}
 			break;
 		case ScanType::INTERLEAVED:
 			if (_secondFrame) {
-				notifyFrameComplete();
+				addCompleteFrameToQueue();
 				_secondFrame = false;
 			} else if (isOdd) {
 				_secondFrame = true;
@@ -658,30 +649,18 @@ void UsbTvDriver::packetToInterleavedFrame(uint8_t *packet, uint32_t packetNo, b
 
 /**
  * Called when a complete frame has been copied from Usb Request Blocks.
- * If another thread is polling via getFrame, this function sets the next
- * frame to be processed and signals the polling thread.
- *
- * If no thread is polling getFrame(), then nothing is done.  The current
- * _usbInputFrame will be overwritten by the next set of packets and
- * _processFrame will not be touched
+ * Simply adds a frame to the process frame queue,
  */
-void UsbTvDriver::notifyFrameComplete() {
-	pthread_mutex_lock(&_frameProcessMutex);
-	if (_frameWait) {
-		_frameWait = false;
-		// Another thread is polling and waiting on a new frame, set it
-		_usbInputFrame->frameId = _currentFrameId;
-		_processFrame = _usbInputFrame;
-		_usbInputFrame = fetchFrameFromPool();  // fetch a new frame
-		pthread_cond_signal(&_frameReadyCond);
+void UsbTvDriver::addCompleteFrameToQueue() {
+	UsbTvFrame* frame = _usbInputFrame;
+	if (_frameProcessQueue.try_enqueue(frame)) {
+		_usbInputFrame = fetchFrameFromPool();
 	} else {
-		// Frame dropped
-		LOGD("Frame Dropped due to no request, ID: %d", _currentFrameId);
+		LOGD("Frame Dropped, no space in process Queue. ID: %d", _currentFrameId);
 		_droppedFrameCounter++;
 		// TODO: memset buffer to zeroes?
 		_usbInputFrame->flags = FRAME_START;
 	}
-	pthread_mutex_unlock(&_frameProcessMutex);
 }
 
 /**
@@ -693,6 +672,13 @@ void UsbTvDriver::notifyFrameComplete() {
 void *frameProcessThread(void* context) {
 	Driver::ThreadContext* ctx = (Driver::ThreadContext*) context;
 	UsbTvDriver* usbtv = ctx->usbtv;
+
+#if defined(PROFILE_FRAME)
+	//** PROFILING VARS ***
+	int frameCount = 0;
+	long maxTime = 0;
+	long minTime = 100;
+#endif
 
 	// If callback is set, execute it.  Otherwise render if the surface is set.
 	// If neither is set, do nothing except release the lock on frameToRender
@@ -707,7 +693,23 @@ void *frameProcessThread(void* context) {
 	while (*(ctx->threadRunning)) {
 		frame = usbtv->getFrame();
 
-		// TODO: I need to profile the time it takes to start a frame
+#if defined(PROFILE_FRAME)
+		/**
+		 * Update: The callback into java fluctuates.  It can be less than 1 ms, but can
+		 * spike up to 30 ms.  This test was conducted on an Xperia Z3.  This explains why I
+		 * am dropping frames.
+		 *
+		 * My assumption is that the delay occurs when the VM does garbage collection, as I am
+		 * allocating 60 byte arrays 345,600 bytes per second (Or allocating and freeing nearly
+		 * 20MB/sec).  I suspect periodically the garbage collector is blocking my allocation
+		 * until it has freed a certain amount of memory.
+		 *
+		 * The solution would be to keep a frame pool of jbytearray buffers, then to create
+		 * global references from them.  Rotate between them when sending, and make sure that
+		 * the caller knows that they have a limited amount of time before a buffer is overwritten.
+		 */
+		auto startTime = std::chrono::system_clock::now();
+#endif
 
 		if (frame == nullptr) {
 			continue;
@@ -722,6 +724,25 @@ void *frameProcessThread(void* context) {
 		}
 
 		frame->lock.clear(std::memory_order_release);
+
+
+#if defined(PROFILE_FRAME)
+		auto processTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::system_clock::now() - startTime);
+
+		maxTime = (processTime.count() > maxTime) ? processTime.count() : maxTime;
+		minTime = (processTime.count() < minTime) ? processTime.count() : minTime;
+
+		frameCount++;
+
+		// Print profiling vars
+		if (frameCount >= 120) {
+			LOGD("Last 120 Frames, Process Max Time: %ld ms\nMin Time: %ld ms",maxTime, minTime);
+			frameCount = 0;
+			maxTime = 0;
+			minTime = 1000;
+		}
+#endif
 
 	}
 

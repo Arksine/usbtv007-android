@@ -29,10 +29,8 @@ private:
 				return true;
 			case JNI_EDETACHED:
 				if (_javaVm->AttachCurrentThread(&_env, nullptr) >= 0) {
-					LOGD("successfully attached thread");
 					return true;
 				} else {
-					LOGD("Could not attach JVM to thread");
 					_env = nullptr;
 					return false;
 				}

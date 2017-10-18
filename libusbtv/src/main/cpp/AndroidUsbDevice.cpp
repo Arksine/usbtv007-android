@@ -338,14 +338,15 @@ bool AndroidUsbDevice::discardIsoTransfers() {
 	if (_isoTransfersSubmitted == 0) {
 		return true;
 	}
-	int ret;
+	int ret = 0;
 	bool success = true;
 
 	for (int i = 0; i < _isoTransfersSubmitted; i++) {
+
 		ret = ioctl(_fileDescriptor, USBDEVFS_DISCARDURB, _isoUrbPool[i]);
 
 		if (ret < 0) {
-			LOGE("Error discarding urb index: %d", i);
+			LOGE("Error discarding urb index: %d\nRet Value: %d", i, ret);
 			success = false;
 		} else {
 			LOGD("Successfully discarded urb, index: %d", i);

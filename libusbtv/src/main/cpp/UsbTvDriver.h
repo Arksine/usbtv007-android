@@ -9,6 +9,7 @@
 #include "AndroidUsbDevice.h"
 #include <pthread.h>
 #include "JavaCallback.h"
+#include "ConcurrentQueue/blockingconcurrentqueue.h"
 
 class UsbTvDriver;
 
@@ -58,13 +59,10 @@ private:
 
 	// Frame Process variables
 	Driver::ThreadContext*  _frameProcessContext;
-	UsbTvFrame*             _processFrame;    // The current frame being processed
 	bool                    _processThreadRunning;
 	pthread_t               _frameProcessThread;
-	pthread_mutex_t         _frameProcessMutex;
-	pthread_cond_t          _frameReadyCond;
-	bool                    _frameWait;
 
+	moodycamel::BlockingConcurrentQueue<UsbTvFrame*>    _frameProcessQueue;
 
 	uint32_t    _droppedFrameCounter;
 	uint32_t    _incompleteFrameCounter;
@@ -83,7 +81,7 @@ private:
 	void packetToProgressiveFrame(uint8_t* packet, uint32_t packetNo);
 	void packetToInterleavedFrame(uint8_t* packet, uint32_t packetNo, bool isOdd);
 	void checkFinishedFrame(bool isOdd);
-	void notifyFrameComplete();
+	void addCompleteFrameToQueue();
 
 public:
 	UsbTvDriver(JavaVM *jvm, jobject thisObj, int fd, int isoEndpoint, int maxIsoPacketSize,

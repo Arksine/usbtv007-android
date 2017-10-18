@@ -9,7 +9,10 @@
 #include <atomic>
 #include <asm/byteorder.h>
 
-//#define DEBUG_ON
+//#define DEBUG_PACKET
+#define PROFILE_PACKET
+#define PROFILE_FRAME
+
 
 #define USBTV_BASE		    0xc000
 #define USBTV_VIDEO_EP	    0x81
