@@ -2,6 +2,7 @@ package com.arksine.libusbtv;
 
 import android.support.annotation.NonNull;
 
+// TODO: add frame pool size
 /**
  * TODO: This will also have a "Device Type" when I make this library more generic.  That
  * also means that there will be a color space paramater
@@ -9,6 +10,7 @@ import android.support.annotation.NonNull;
 public class DeviceParams {
     private final UsbTv.DriverCallbacks mCallbacks;
     private final boolean mUseInternalReceiver;
+    private final int mFramePoolSize;
     private final int mFrameWidth;
     private final int mFrameHeight;
     private final int mFrameSizeBytes;
@@ -19,6 +21,7 @@ public class DeviceParams {
     private DeviceParams(Builder builder) {
         mCallbacks = builder.callbacks;
         mUseInternalReceiver = builder.useInternalReceiver;
+        mFramePoolSize = builder.framePoolSize;
         mFrameWidth = builder.frameWidth;
         mFrameHeight = builder.frameHeight;
         mFrameSizeBytes = mFrameWidth * mFrameHeight * 2;  // TODO: this would change if the colorspace is different
@@ -59,9 +62,14 @@ public class DeviceParams {
         return mInput;
     }
 
+    public int getframePoolSize() {
+        return mFramePoolSize;
+    }
+
     public static class Builder {
         private UsbTv.DriverCallbacks callbacks;
         private boolean useInternalReceiver;
+        private int framePoolSize;
         private int frameWidth;
         private int frameHeight;
         private UsbTv.TvNorm norm;
@@ -71,6 +79,7 @@ public class DeviceParams {
         public Builder() {
             callbacks = null;
             useInternalReceiver = true;
+            framePoolSize = 4;
             norm = UsbTv.TvNorm.NTSC;
             scanType = UsbTv.ScanType.PROGRESSIVE;
             input = UsbTv.InputSelection.COMPOSITE;
@@ -79,6 +88,7 @@ public class DeviceParams {
         public Builder(@NonNull DeviceParams params) {
             callbacks = params.mCallbacks;
             useInternalReceiver = params.mUseInternalReceiver;
+            framePoolSize = params.mFramePoolSize;
             frameWidth = params.mFrameWidth;
             frameHeight = params.mFrameHeight;
             norm = params.mNorm;
@@ -93,6 +103,11 @@ public class DeviceParams {
 
         public Builder useLibraryReceiver(boolean use) {
             useInternalReceiver = use;
+            return this;
+        }
+
+        public Builder setFramePoolSize(int poolSize) {
+            framePoolSize = poolSize;
             return this;
         }
 

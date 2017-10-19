@@ -51,6 +51,7 @@
 // add TvNorm and a Flag for Frame Status (complete, incomplete, other possible statuses)
 struct UsbTvFrame {
 	void*       buffer;
+	uint8_t     poolIndex;
 	uint32_t    bufferSize;
 	uint16_t    width;
 	uint16_t    height;

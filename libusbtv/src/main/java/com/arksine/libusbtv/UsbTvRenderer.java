@@ -84,6 +84,8 @@ public class UsbTvRenderer {
 
                 mInputAllocation.copyFromUnchecked(buf);
 
+                frame.returnFrame();  // Return Frame to its Pool so it can be reused
+
                 mConvertKernel.forEach_convertFromYUYV(mInputAllocation);
                 mOutputAllocation.ioSend();  // Send output frame to surface
 

@@ -39,7 +39,7 @@ import timber.log.Timber;
 public class UsbTv {
     public static final boolean DEBUG = true;  // TODO: set to false for release
 
-    private static final int FRAME_POOL_SIZE = 4;
+    private static final int FRAME_POOL_SIZE = 6;
 
     public interface DriverCallbacks {
         void onOpen(IUsbTvDriver driver, boolean status);
@@ -166,10 +166,11 @@ public class UsbTv {
     private AtomicBoolean mIsStreaming = new AtomicBoolean(false);
 
     private DeviceParams mDeviceParams;
+    private JavaFramePool mLocalPool;
+    private UsbTvFrame mCurrentFrame = null;
 
     private DriverCallbacks mDriverCallbacks;
     private onFrameReceivedListener mOnFrameReceivedListener = null;
-    private Surface mDrawingSurface = null;
     private Handler mNativeHander;
 
     private static ArrayList<UsbTv> mReferenceList = new ArrayList<>();
@@ -284,6 +285,25 @@ public class UsbTv {
         mNativeHander = new Handler(nativeThread.getLooper(), mNativeHandlerCallback);
     }
 
+    /**
+     * Updates the frame pool based on the current Frame Listener status and
+     * the current device parameters.  If there is no frame callback, the
+     * frame pool is deleted.  Otherwise it will be created, and the buffer size
+     * of each frame is dependent on the TV Norm and Scan Type.
+     */
+    private void updateLocalPool() {
+        if (mOnFrameReceivedListener != null) {
+            if (mLocalPool != null) {
+                mLocalPool.dispose();
+            }
+            mLocalPool = new JavaFramePool(mDeviceParams, FRAME_POOL_SIZE);
+        } else if (mLocalPool != null) {
+            // No Frame Callback, no local pool necessary
+            mLocalPool.dispose();
+            mLocalPool = null;
+        }
+    }
+
     private boolean initDevice() {
         if (!mHasUsbPermission) {
             Timber.i("Do not have necessary permissions to open the device");
@@ -365,6 +385,10 @@ public class UsbTv {
                 mUsbtvDevice = null;
             }
 
+            if (mLocalPool != null) {
+                mLocalPool.dispose();
+            }
+
             mReferenceList.remove(this);
 
             if (mReferenceList.isEmpty()) {
@@ -403,17 +427,21 @@ public class UsbTv {
 
     // Callback From JNI
     // TODO: Replace the
-    public void frameCallback(byte[] frame, int width, int height, int id) {
-        if (mOnFrameReceivedListener != null) {
-            UsbTvFrame tvFrame = new UsbTvFrame(frame, width, height, id,
-                    mDeviceParams.getScanType(), mDeviceParams.getTvNorm());
-            mOnFrameReceivedListener.onFrameReceived(tvFrame);
+    public void frameCallback(int id) {
+        if (mOnFrameReceivedListener != null && mCurrentFrame != null) {
+            mCurrentFrame.setFrameId(id);
+            mOnFrameReceivedListener.onFrameReceived(mCurrentFrame);
         }
     }
 
     // Called from JNI.  Allows for a shared, pre-allocated frame pool to be accessed.
     public byte[] getJavaBuffer() {
-        return  null;
+        mCurrentFrame = mLocalPool.getLocalBuffer();
+        if (mCurrentFrame != null) {
+            return mCurrentFrame.getFrameBuf();
+        } else {
+            return null;
+        }
     }
 
     // Native Methods
@@ -553,6 +581,7 @@ public class UsbTv {
                     mDeviceParams = new DeviceParams.Builder(mDeviceParams)
                             .setTvNorm((TvNorm)message.obj)
                             .build();
+                    updateLocalPool();      // Frame size may change, so update local framepool
                     if (!setTvNorm(mDeviceParams.getTvNorm().ordinal())) {
                         mDriverCallbacks.onError();
                     }
@@ -561,6 +590,7 @@ public class UsbTv {
                     mDeviceParams = new DeviceParams.Builder(mDeviceParams)
                             .setScanType((ScanType)message.obj)
                             .build();
+                    updateLocalPool();      // Frame size may change, so update local framepool
                     if (!setScanType(mDeviceParams.getScanType().ordinal())) {
                         mDriverCallbacks.onError();
                     }
@@ -578,6 +608,7 @@ public class UsbTv {
                 case SET_CALLBACK:
                     mOnFrameReceivedListener = (onFrameReceivedListener) message.obj;
                     boolean use = mOnFrameReceivedListener != null;
+                    updateLocalPool();
                     useCallback(use);
                     break;
                 default:

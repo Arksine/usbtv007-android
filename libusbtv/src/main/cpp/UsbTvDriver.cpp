@@ -381,8 +381,9 @@ void UsbTvDriver::allocateFramePool() {
 		size_t buffersize = _frameWidth * bufferheight * 2;  // width * height * bytes per pixel
 
 		// init frame pool
-		for (int i = 0; i < _framePoolSize; i++) {
+		for (uint8_t i = 0; i < _framePoolSize; i++) {
 			_framePool[i] = new UsbTvFrame;
+			_framePool[i]->poolIndex = i;
 			_framePool[i]->buffer = malloc(buffersize);
 			_framePool[i]->bufferSize = (uint32_t) buffersize;
 			_framePool[i]->width = _frameWidth;
@@ -695,18 +696,16 @@ void *frameProcessThread(void* context) {
 
 #if defined(PROFILE_FRAME)
 		/**
-		 * Update: The callback into java fluctuates.  It can be less than 1 ms, but can
-		 * spike up to 30 ms.  This test was conducted on an Xperia Z3.  This explains why I
-		 * am dropping frames.
+		 * Update: Keeping a java side frame pool seems to have eliminated the high spikes.
+		 * Process times typically range between less than 1ms to 5ms, with spikes no higher
+		 * than 10 ms.  This is all acceptable as it falls in acceptable parameters.
 		 *
-		 * My assumption is that the delay occurs when the VM does garbage collection, as I am
-		 * allocating 60 byte arrays 345,600 bytes per second (Or allocating and freeing nearly
-		 * 20MB/sec).  I suspect periodically the garbage collector is blocking my allocation
-		 * until it has freed a certain amount of memory.
-		 *
-		 * The solution would be to keep a frame pool of jbytearray buffers, then to create
-		 * global references from them.  Rotate between them when sending, and make sure that
-		 * the caller knows that they have a limited amount of time before a buffer is overwritten.
+		 * TODO:  A better implementation for this is to wrap a local frame buffer in a
+		 * direct bytebuffer, then send that reference to java.  Java apps can then
+		 * keep a local buffer of type byte[] or create as many as they would like, and
+		 * copy frame data there using the ByteBuffer's bulk get() method.   Finally, when
+		 * the Java app is done it can return the buffer to the local frame pool by
+		 * calling a function that releases its lock.
 		 */
 		auto startTime = std::chrono::system_clock::now();
 #endif
@@ -723,6 +722,7 @@ void *frameProcessThread(void* context) {
 			// TODO: call render frame : WILL PROBABLY NOT DO THIS, JAVA RENDERER SEEMS FAST ENOUGH
 		}
 
+		// TODO: Either Java or the local frame renderer will clear the lock
 		frame->lock.clear(std::memory_order_release);
 
 

@@ -140,6 +140,16 @@ public class MainActivity extends AppCompatActivity {
         }
 
         /*
+            TODO: This doesn't work well when the device is rotated.  When the surface is destroyed
+             streaming stops, however its almost as if the device is disconnected  (its possible
+             the otg cable shook loose when I rotated it)
+
+             Regardless, the device crashed, then onCreate is called again, attempts to open the
+             device, and its already open.
+
+             The best way to handle it is to probably close the device when the surface is destroyed, or in onPause.
+             Then open it in onResume.  Truthfully most apps using this library should lock rotation to landscape anyway
+
             Attempt to open the device.  A driver interface will be passed to the onOpen
             callback if the open was successful.
          */

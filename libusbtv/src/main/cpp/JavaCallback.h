@@ -10,12 +10,16 @@
 #include "util.h"
 #include "usbtv_definitions.h"
 
+// TODO: I should make the base of this abstract, then inherit from it, requiring the
+// child to implement invoke.  Also, the second method (_getBufMethod) should be in the
+// child.
 class JavaCallback {
 private:
 	JavaVM*     _javaVm;
 	std::string _functionName;
 	JNIEnv*     _env;
 	jmethodID   _cbMethod;
+	jmethodID   _getBufMethod;
 	jclass      _methodClass;
 	jobject     _methodParent;
 	bool        _threadAttached;
@@ -66,8 +70,10 @@ public:
 
 		if (_threadAttached) {
 			LOGD("Thread successfully attached");
-			const char *signature = "([BIII)V";
-			_cbMethod = _env->GetMethodID(_methodClass, _functionName.c_str(), signature);
+			const char *cbsig = "(I)V";
+			const char *getBufSig = "()[B";
+			_cbMethod = _env->GetMethodID(_methodClass, _functionName.c_str(), cbsig);
+			_getBufMethod = _env->GetMethodID(_methodClass, "getJavaBuffer", getBufSig);
 		} else {
 			LOGD("Unable to attach thread");
 		}
@@ -82,11 +88,12 @@ public:
 
 	void invoke(UsbTvFrame* frame) {
 		if (_threadAttached) {
-			jbyteArray array = _env->NewByteArray(frame->bufferSize);
-			_env->SetByteArrayRegion(array, 0, frame->bufferSize, (jbyte *) frame->buffer);
-			_env->CallVoidMethod(_methodParent, _cbMethod, array, (jint) frame->width,
-			                    (jint) frame->height, (jint) frame->frameId);
-			_env->DeleteLocalRef(array);
+			jbyteArray array = (jbyteArray )_env->CallObjectMethod(_methodParent, _getBufMethod);
+			if (array != nullptr) {
+				_env->SetByteArrayRegion(array, 0, frame->bufferSize, (jbyte *) frame->buffer);
+				_env->CallVoidMethod(_methodParent, _cbMethod, (jint) frame->frameId);
+				_env->DeleteLocalRef(array);
+			}
 		}
 	}
 };
