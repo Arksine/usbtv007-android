@@ -19,7 +19,6 @@ private:
 	std::string _functionName;
 	JNIEnv*     _env;
 	jmethodID   _cbMethod;
-	jmethodID   _getBufMethod;
 	jclass      _methodClass;
 	jobject     _methodParent;
 	bool        _threadAttached;
@@ -70,10 +69,8 @@ public:
 
 		if (_threadAttached) {
 			LOGD("Thread successfully attached");
-			const char *cbsig = "(I)V";
-			const char *getBufSig = "()[B";
+			const char *cbsig = "(Ljava/nio/ByteBuffer;II)V";
 			_cbMethod = _env->GetMethodID(_methodClass, _functionName.c_str(), cbsig);
-			_getBufMethod = _env->GetMethodID(_methodClass, "getJavaBuffer", getBufSig);
 		} else {
 			LOGD("Unable to attach thread");
 		}
@@ -88,12 +85,8 @@ public:
 
 	void invoke(UsbTvFrame* frame) {
 		if (_threadAttached) {
-			jbyteArray array = (jbyteArray )_env->CallObjectMethod(_methodParent, _getBufMethod);
-			if (array != nullptr) {
-				_env->SetByteArrayRegion(array, 0, frame->bufferSize, (jbyte *) frame->buffer);
-				_env->CallVoidMethod(_methodParent, _cbMethod, (jint) frame->frameId);
-				_env->DeleteLocalRef(array);
-			}
+			_env->CallVoidMethod(_methodParent, _cbMethod, frame->byteBuffer,
+			                     (jint)frame->poolIndex, (jint) frame->frameId);
 		}
 	}
 };

@@ -7,8 +7,10 @@
 #include "UsbTvDriver.h"
 #include "util.h"
 
+// Global vars necessary for tracking
 UsbTvDriver* usbtv = nullptr;
 JavaVM* javaVm = nullptr;
+JavaCallback* callback = nullptr;
 
 // TODO: jniOnUnload?
 
@@ -40,7 +42,13 @@ JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_initialize(JNIEnv* je
 		return (jboolean) false;
 	}
 
-	usbtv = new UsbTvDriver(javaVm, thisObj, (int)fd, (int)isoEndpoint, (int)maxIsoPacketSize,
+	if (callback != nullptr) {
+		delete callback;
+	}
+
+	callback = new JavaCallback(javaVm, thisObj, "frameCallback");
+
+	usbtv = new UsbTvDriver(jenv, callback, (int)fd, (int)isoEndpoint, (int)maxIsoPacketSize,
 	                        (int)framePoolSize, (int)input, (int)norm, (int)scanType);
 
 
@@ -53,6 +61,11 @@ JNIEXPORT void JNICALL Java_com_arksine_libusbtv_UsbTv_dispose(JNIEnv* jenv,
 	if (usbtv != nullptr) {
 		delete usbtv;
 		usbtv = nullptr;
+	}
+
+	if (callback != nullptr) {
+		delete callback;
+		callback = nullptr;
 	}
 
 }
@@ -145,3 +158,12 @@ JNIEXPORT jint JNICALL Java_com_arksine_libusbtv_UsbTv_getControl(JNIEnv* jenv,
 	}
 }
 
+JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTvFrame_returnFrameToPool(JNIEnv* jenv,
+                                                                              jobject thisObj,
+                                                                              jint poolIndex) {
+	if (usbtv != nullptr) {
+		return (jboolean) usbtv->clearFrameLock(poolIndex);
+	} else {
+		return (jboolean) false;
+	}
+}

@@ -57,6 +57,7 @@ struct UsbTvFrame {
 	uint16_t    height;
 	uint32_t    frameId;
 	uint32_t    flags;
+	jobject     byteBuffer;     // This is a reference to a bytebuffer that will be sent to java via cb
 
 	std::atomic_flag lock = ATOMIC_FLAG_INIT;
 };

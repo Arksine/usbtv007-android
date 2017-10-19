@@ -12,12 +12,18 @@
 
 void *frameProcessThread(void* context);
 
-UsbTvDriver::UsbTvDriver(JavaVM *jvm, jobject thisObj, int fd, int isoEndpoint,
+UsbTvDriver::UsbTvDriver(JNIEnv *env, JavaCallback* cb, int fd, int isoEndpoint,
                          int maxIsoPacketSize, int framePoolSize,
                          int input, int norm, int scanType)
 		: _frameProcessQueue((size_t)(framePoolSize - 1)){
 
 	_initalized = false;
+
+	if (env == nullptr || cb == nullptr) {
+		return;
+	}
+
+	_env = env;
 	_renderSurface = nullptr;
 	_shouldRender = false;
 	_streamActive = false;
@@ -54,7 +60,7 @@ UsbTvDriver::UsbTvDriver(JavaVM *jvm, jobject thisObj, int fd, int isoEndpoint,
 	_frameProcessContext->shouldRender = &_shouldRender;
 	_frameProcessContext->useCallback = &_useCallback;
 	_frameProcessContext->threadRunning = &_processThreadRunning;
-	_frameProcessContext->callback = new JavaCallback(jvm, thisObj, "frameCallback");
+	_frameProcessContext->callback = cb;
 
 	// TODO: Initialize Audio Vars
 
@@ -72,7 +78,6 @@ UsbTvDriver::~UsbTvDriver() {
 	LOGD("Streaming stopped");
 	// TODO: Delete any dynamic Audio Vars and Frame Renderer if necessary
 
-	delete _frameProcessContext->callback;
 	delete _frameProcessContext;
 	delete _usbConnection;
 }
@@ -347,6 +352,22 @@ UsbTvFrame* UsbTvDriver::getFrame() {
 }
 
 /**
+ * Allows an external frame consumer to clear the lock on a frame buffer when
+ * it is finished processing, which makes it for the driver to write.
+ *
+ * @param framePoolIndex    The index of the frame pool to release
+ * @return  True if successful, otherwise false
+ */
+bool UsbTvDriver::clearFrameLock(int framePoolIndex) {
+	if (_framePool != nullptr && framePoolIndex >= 0 && framePoolIndex < _framePoolSize) {
+		_framePool[framePoolIndex]->lock.clear(std::memory_order_release);
+		return true;
+	} else {
+		return false;
+	}
+}
+
+/**
  * Sets the Provided register values using a control transfer
  */
 bool UsbTvDriver::setRegisters(const uint16_t regs[][2] , int size ) {
@@ -390,6 +411,11 @@ void UsbTvDriver::allocateFramePool() {
 			_framePool[i]->height = (uint16_t) bufferheight;
 			_framePool[i]->flags = 0;
 			_framePool[i]->lock.clear(std::memory_order_release);
+
+			// Create a DirectByteBuffer around the frame's buffer to easily send back to java
+			jobject bb = _env->NewDirectByteBuffer(_framePool[i]->buffer, buffersize);
+			_framePool[i]->byteBuffer = _env->NewGlobalRef(bb);
+			_env->DeleteLocalRef(bb);
 		}
 	}
 }
@@ -403,6 +429,7 @@ void UsbTvDriver::freeFramePool() {
 			if (_framePool[i]->lock.test_and_set(std::memory_order_acquire)) {
 				LOGD("frame index %d still has a lock when attempting to free", i);
 			}
+			_env->DeleteGlobalRef(_framePool[i]->byteBuffer);
 			free(_framePool[i]->buffer);
 			delete _framePool[i];
 		}

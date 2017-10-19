@@ -60,6 +60,10 @@ JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_setControl(JNIEnv* je
 JNIEXPORT jint JNICALL Java_com_arksine_libusbtv_UsbTv_getControl(JNIEnv* jenv,
                                                                   jobject thisObj,
                                                                   jint control);
+
+JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTvFrame_returnFrameToPool(JNIEnv* jenv,
+                                                                                  jobject thisObj,
+                                                                                  jint poolIndex);
 };
 
 #endif //USBTV007_ANDROID_USBTV_H

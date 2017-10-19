@@ -27,6 +27,8 @@ class UsbTvDriver {
 private:
 	bool _initalized; // Variable to check to make sure constructor successfully completed
 
+	JNIEnv* _env;     // Reference to Java environment from local thread
+
 	/* Video Members */
 	TvInput     _input;
 	TvNorm      _tvNorm;
@@ -84,7 +86,7 @@ private:
 	void addCompleteFrameToQueue();
 
 public:
-	UsbTvDriver(JavaVM *jvm, jobject thisObj, int fd, int isoEndpoint, int maxIsoPacketSize,
+	UsbTvDriver(JNIEnv *env, JavaCallback* cb, int fd, int isoEndpoint, int maxIsoPacketSize,
 	            int framePoolSize, int input, int norm, int scanType);
 	~UsbTvDriver();
 
@@ -96,6 +98,7 @@ public:
 	void setSurface(jobject surface);
 
 	UsbTvFrame* getFrame();
+	bool clearFrameLock(int framePoolIndex);
 
 	bool startStreaming();
 	void stopStreaming();

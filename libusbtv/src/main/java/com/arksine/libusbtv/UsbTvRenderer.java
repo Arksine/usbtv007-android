@@ -14,6 +14,7 @@ import android.renderscript.Type;
 import android.support.annotation.NonNull;
 import android.view.Surface;
 
+import java.nio.ByteBuffer;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -34,6 +35,9 @@ public class UsbTvRenderer {
     private Allocation mOutputAllocation = null;
     private ScriptC_ConvertYUYV mConvertKernel;
     private AtomicBoolean mThreadRunning = new AtomicBoolean(false);
+
+    // TODO: try changing this to a bitmap that shares its backing store with the input allocation
+    private byte[] mRenderBuf;
 
     private BlockingQueue<UsbTvFrame> mFrameQueue = new ArrayBlockingQueue<UsbTvFrame>(10, true);
 
@@ -74,17 +78,17 @@ public class UsbTvRenderer {
                 renderTime = System.currentTimeMillis();
 
                 // Copy frame to input allocaton
-                byte[] buf = frame.getFrameBuf();
+                ByteBuffer buf = frame.getFrameBuf();
+                buf.get(mRenderBuf);
+                frame.returnFrame();  // Return Frame to its Pool so it can be reused
 
-                if (buf.length != mInputAllocation.getBytesSize()) {
+                if (mRenderBuf.length != mInputAllocation.getBytesSize()) {
                     Timber.e("Incoming frame buffer size, does not match input allocation size");
                     mThreadRunning.set(false);
                     return;
                 }
 
-                mInputAllocation.copyFromUnchecked(buf);
-
-                frame.returnFrame();  // Return Frame to its Pool so it can be reused
+                mInputAllocation.copyFromUnchecked(mRenderBuf);
 
                 mConvertKernel.forEach_convertFromYUYV(mInputAllocation);
                 mOutputAllocation.ioSend();  // Send output frame to surface
@@ -155,6 +159,8 @@ public class UsbTvRenderer {
 
 
     private void initAllocations (DeviceParams params) {
+        mRenderBuf = new byte[params.getFrameSizeInBytes()];
+
         Element inputElement = Element.U8_4(mRs);
         Type.Builder outputType = new Type.Builder(mRs, Element.RGBA_8888(mRs));
         outputType.setX(params.getFrameWidth());
