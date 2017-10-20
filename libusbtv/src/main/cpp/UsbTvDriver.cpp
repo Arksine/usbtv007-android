@@ -3,14 +3,12 @@
 //
 
 #include "UsbTvDriver.h"
-#include "util.h"
-#include <cstdlib>
 
 #if defined(PROFILE_FRAME) || defined(PROFILE_PACKET)
 #include <chrono>
 #endif
 
-void *frameProcessThread(void* context);
+void frame_process_thread(Driver::ThreadContext* ctx);
 
 UsbTvDriver::UsbTvDriver(JNIEnv *env, JavaCallback* cb, int fd, int isoEndpoint,
                          int maxIsoPacketSize, int framePoolSize,
@@ -54,6 +52,7 @@ UsbTvDriver::UsbTvDriver(JNIEnv *env, JavaCallback* cb, int fd, int isoEndpoint,
 	                                                    std::placeholders::_1));
 
 	_useCallback = false;
+	_frameProcessThread = nullptr;
 	_processThreadRunning = false;
 	_frameProcessContext = new Driver::ThreadContext;
 	_frameProcessContext->usbtv = this;
@@ -145,9 +144,15 @@ bool UsbTvDriver::startStreaming() {
 		_usbInputFrame = fetchFrameFromPool();
 
 		// Start Frame processing thread
-		_processThreadRunning = true;
-		success = pthread_create(&_frameProcessThread, nullptr,
-		                         frameProcessThread, (void*)_frameProcessContext) == 0;
+		if (_frameProcessThread == nullptr) {
+			_processThreadRunning = true;
+			_frameProcessThread = new std::thread(frame_process_thread, _frameProcessContext);
+			success = (_frameProcessThread != nullptr);
+		} else {
+			LOGE("ERROR, Process thread not free;");
+			success = false;
+		}
+
 		if (!success) {
 			LOGI("Could not start Frame Process Thread");
 			_processThreadRunning = false;
@@ -206,12 +211,16 @@ void UsbTvDriver::stopStreaming() {
 		}
 
 		// Stop Frame processor thread
-		if (_processThreadRunning) {
-			_processThreadRunning = false;
-			UsbTvFrame* frame = nullptr;
-			// Enqueue a null frame to make sure that the thread exits its loop
-			_frameProcessQueue.enqueue(frame);
-			pthread_join(_frameProcessThread, nullptr);
+		if (_frameProcessThread != nullptr) {
+			if (_processThreadRunning) {
+				_processThreadRunning = false;
+				UsbTvFrame *frame = nullptr;
+				// Enqueue a null frame to make sure that the thread exits its loop
+				_frameProcessQueue.enqueue(frame);
+			}
+			_frameProcessThread->join();
+			delete _frameProcessThread;
+			_frameProcessThread = nullptr;
 		}
 
 		_usbConnection->setInterface(0, 0);
@@ -697,8 +706,7 @@ void UsbTvDriver::addCompleteFrameToQueue() {
  * @param context
  * @return
  */
-void *frameProcessThread(void* context) {
-	Driver::ThreadContext* ctx = (Driver::ThreadContext*) context;
+void frame_process_thread(Driver::ThreadContext* ctx) {
 	UsbTvDriver* usbtv = ctx->usbtv;
 
 #if defined(PROFILE_FRAME)
@@ -711,7 +719,7 @@ void *frameProcessThread(void* context) {
 	// If callback is set, execute it.  Otherwise render if the surface is set.
 	// If neither is set, do nothing except release the lock on frameToRender
 	if (usbtv == NULL) {
-		return 0;
+		return;
 	}
 
 	ctx->callback->attachThread();
@@ -772,5 +780,5 @@ void *frameProcessThread(void* context) {
 
 	ctx->callback->detachThread();
 
-	return 0;
+	return;
 }

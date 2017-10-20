@@ -6,8 +6,6 @@
 #define USBTV007_ANDROID_USBTV_H
 
 #include <jni.h>
-#include <endian.h>
-#include <atomic>
 #include "AndroidUsbDevice.h"
 
 extern "C" {

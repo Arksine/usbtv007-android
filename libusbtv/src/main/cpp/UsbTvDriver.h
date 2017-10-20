@@ -5,9 +5,9 @@
 #ifndef USBTV007_ANDROID_USBTVDRIVER_H
 #define USBTV007_ANDROID_USBTVDRIVER_H
 
+#include <thread>
 #include "usbtv_definitions.h"
 #include "AndroidUsbDevice.h"
-#include <pthread.h>
 #include "JavaCallback.h"
 #include "ConcurrentQueue/blockingconcurrentqueue.h"
 
@@ -62,7 +62,7 @@ private:
 	// Frame Process variables
 	Driver::ThreadContext*  _frameProcessContext;
 	bool                    _processThreadRunning;
-	pthread_t               _frameProcessThread;
+	std::thread*            _frameProcessThread;
 
 	moodycamel::BlockingConcurrentQueue<UsbTvFrame*>    _frameProcessQueue;
 

@@ -5,7 +5,6 @@
 #include <cstdlib>
 #include "usbtv.h"
 #include "UsbTvDriver.h"
-#include "util.h"
 
 // Global vars necessary for tracking
 UsbTvDriver* usbtv = nullptr;

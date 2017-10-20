@@ -9,7 +9,8 @@
 #include <cstdint>
 #include <linux/usbdevice_fs.h>
 #include <linux/usb/ch9.h>
-#include <pthread.h>
+#include <thread>
+#include <mutex>
 #include <functional>
 
 
@@ -46,8 +47,8 @@ private:
 	bool        _isoThreadRunning;
 
 	UsbDevice::ThreadContext*   _isoThreadCtx;
-	pthread_t                   _isoThread;
-	pthread_mutex_t             _isoMutex;
+	std::thread*                _isoThread;
+	std::mutex                  _isoMutex;
 	usbdevfs_urb**              _isoUrbPool;
 
 

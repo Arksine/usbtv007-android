@@ -8,11 +8,11 @@
 
 // TODO: If a bulk transfer returns -EPIPE, it is stalled.  Need to ioctl send clear halt
 
-void *iso_read_thread(void* context);
+void iso_read_thread(UsbDevice::ThreadContext* ctx);
 
 AndroidUsbDevice::AndroidUsbDevice(int fd, IsonchronousCallback callback) {
 	_fileDescriptor = fd;
-	_isoMutex = PTHREAD_MUTEX_INITIALIZER;
+	_isoThread = nullptr;
 	_isoUrbPool = nullptr;
 	_isoTransfersAllocated = 0;
 	_isoTransfersSubmitted = 0;
@@ -33,7 +33,6 @@ AndroidUsbDevice::~AndroidUsbDevice() {
 	delete _isoThreadCtx;
 	discardIsoTransfers();
 	freeIsoTransfers();
-	pthread_mutex_destroy(&_isoMutex);
 }
 
 /**
@@ -230,7 +229,7 @@ int AndroidUsbDevice::bulkWrite(uint8_t endpoint, unsigned int length, unsigned 
 bool AndroidUsbDevice::initIsoTransfers(uint8_t numTransfers, uint8_t endpoint,
                                         uint32_t packetLength, uint8_t numberOfPackets) {
 
-	pthread_mutex_lock(&_isoMutex);
+	_isoMutex.lock();
 	bool success = true;
 	if (_isoTransfersSubmitted > 0) {
 		// TODO: Should I just return false?
@@ -267,7 +266,7 @@ bool AndroidUsbDevice::initIsoTransfers(uint8_t numTransfers, uint8_t endpoint,
 		_numIsoPackets = numberOfPackets;
 	}
 
-	pthread_mutex_unlock(&_isoMutex);
+	_isoMutex.unlock();
 
 	return success;
 }
@@ -401,20 +400,20 @@ void AndroidUsbDevice::allocateIsoTransfers(uint32_t packetLength, uint8_t numbe
  * @return
  */
 bool AndroidUsbDevice::startIsoAsyncRead() {
-	int ret;
 	bool success = true;
-	pthread_mutex_lock(&_isoMutex);
-	if (!_isoThreadRunning) {
+	_isoMutex.lock();
+	if (_isoThread == nullptr) {
 		_isoThreadRunning = true;
-		ret = pthread_create(&_isoThread, nullptr, iso_read_thread, (void *)_isoThreadCtx);
-		if (ret != 0) {
-			success = false;
+		_isoThread = new std::thread(iso_read_thread, _isoThreadCtx);
+		if ( _isoThread == nullptr) {
 			_isoThreadRunning = false;
+			LOGE("Error starting isonchronous transfer thread");
+			success = false;
 		}
 	} else {
 		success = false;
 	}
-	pthread_mutex_unlock(&_isoMutex);
+	_isoMutex.unlock();
 
 	return success;
 }
@@ -423,14 +422,16 @@ bool AndroidUsbDevice::startIsoAsyncRead() {
  * Stops async iso read thread.
  */
 void AndroidUsbDevice::stopIsoAsyncRead() {
-	pthread_mutex_lock(&_isoMutex);
-	if (_isoThreadRunning) {
+	_isoMutex.lock();
+	if (_isoThread != nullptr) {
 		_isoThreadRunning = false;
-		pthread_join(_isoThread, nullptr);
+		_isoThread->join();
+		delete _isoThread;
+		_isoThread = nullptr;
 		discardIsoTransfers();
 
 	}
-	pthread_mutex_unlock(&_isoMutex);
+	_isoMutex.unlock();
 }
 
 /**
@@ -460,8 +461,7 @@ usbdevfs_urb* AndroidUsbDevice::isoReadSync(bool wait) {
  * @param context Contains contextual data shared with the caller
  * @return
  */
-void *iso_read_thread(void* context) {
-	UsbDevice::ThreadContext* ctx = (UsbDevice::ThreadContext*) context;
+void iso_read_thread(UsbDevice::ThreadContext* ctx) {
 	int fd = ctx->parent->getFileDescriptor();
 	int ret;
 
@@ -489,7 +489,7 @@ void *iso_read_thread(void* context) {
 				// TODO: I don't think these errors are recoverable.  I need to signal
 				// an Exit to the Parent Driver so it can clean up
 				*(ctx->isoThreadRunning) = false;
-				return 0;
+				return;
 			default:
 				// Recoverable?
 				break;
@@ -502,6 +502,6 @@ void *iso_read_thread(void* context) {
 
 	}
 
-	return 0;
+	return;
 }
 
