@@ -10,14 +10,14 @@
 
 void frame_process_thread(Driver::ThreadContext* ctx);
 
-UsbTvDriver::UsbTvDriver(JNIEnv *env, JavaCallback* cb, int fd, int isoEndpoint,
-                         int maxIsoPacketSize, int framePoolSize,
+UsbTvDriver::UsbTvDriver(JNIEnv *env, jobject utvObj, JavaCallback* cb, int fd,
+                         int isoEndpoint, int maxIsoPacketSize, int framePoolSize,
                          int input, int norm, int scanType)
 		: _frameProcessQueue((size_t)(framePoolSize - 1)){
 
 	_initalized = false;
 
-	if (env == nullptr || cb == nullptr) {
+	if (env == nullptr || cb == nullptr || utvObj == nullptr) {
 		return;
 	}
 
@@ -48,6 +48,7 @@ UsbTvDriver::UsbTvDriver(JNIEnv *env, JavaCallback* cb, int fd, int isoEndpoint,
 	_packetsDone = 0;
 	_packetsPerField = 0;
 
+	_usbtvObj = env->NewGlobalRef(utvObj);
 	_usbConnection = new AndroidUsbDevice(fd, std::bind(&UsbTvDriver::onUrbReceived, this,
 	                                                    std::placeholders::_1));
 
@@ -70,15 +71,18 @@ UsbTvDriver::UsbTvDriver(JNIEnv *env, JavaCallback* cb, int fd, int isoEndpoint,
 
 UsbTvDriver::~UsbTvDriver() {
 
-	if (_streamActive) {
-		stopStreaming();
+	if(_initalized) {
+		if (_streamActive) {
+			stopStreaming();
+		}
+
+		LOGD("Streaming stopped");
+		// TODO: Delete any dynamic Audio Vars and Frame Renderer if necessary
+
+		_env->DeleteGlobalRef(_usbtvObj);
+		delete _frameProcessContext;
+		delete _usbConnection;
 	}
-
-	LOGD("Streaming stopped");
-	// TODO: Delete any dynamic Audio Vars and Frame Renderer if necessary
-
-	delete _frameProcessContext;
-	delete _usbConnection;
 }
 
 bool UsbTvDriver::startStreaming() {
@@ -249,6 +253,7 @@ void UsbTvDriver::stopStreaming() {
 }
 
 bool UsbTvDriver::setTvNorm(int norm) {
+	TvNorm old = _tvNorm;
 	switch (norm) {
 		case 0:
 			_tvNorm = TvNorm ::NTSC;
@@ -266,7 +271,7 @@ bool UsbTvDriver::setTvNorm(int norm) {
 	}
 
 	// If streaming, restart
-	if (_streamActive) {
+	if (_streamActive && old != _tvNorm) {
 		stopStreaming();
 		return startStreaming();
 	}
@@ -275,28 +280,30 @@ bool UsbTvDriver::setTvNorm(int norm) {
 }
 
 bool UsbTvDriver::setTvInput(int input) {
+	TvInput old = _input;
 	switch (input) {
 		case 0:
 			_input = TvInput ::USBTV_COMPOSITE_INPUT;
+			if (_streamActive && old != _input) {
+				return setRegisters(COMPOSITE_INPUT, ARRAY_SIZE(COMPOSITE_INPUT));
+			}
 			break;
 		case 1:
 			_input = TvInput ::USBTV_SVIDEO_INPUT;
+			if (_streamActive && old != _input) {
+				return setRegisters(SVIDEO_INPUT, ARRAY_SIZE(SVIDEO_INPUT));
+			}
 			break;
 		default:
 			LOGI("Invalid input selection");
 			return false;
 	}
 
-	// If streaming, restart
-	if (_streamActive) {
-		stopStreaming();
-		return startStreaming();
-	}
-
 	return true;
 }
 
 bool UsbTvDriver::setScanType(int scanType) {
+	ScanType old = _scanType;
 	switch (scanType) {
 		case 0:
 			_scanType = ScanType::PROGRESSIVE;
@@ -313,7 +320,7 @@ bool UsbTvDriver::setScanType(int scanType) {
 	}
 
 	// If streaming, restart
-	if (_streamActive) {
+	if (_streamActive && _scanType != old) {
 		stopStreaming();
 		return startStreaming();
 	}
@@ -410,6 +417,12 @@ void UsbTvDriver::allocateFramePool() {
 		                        uint32_t(_frameHeight / 2);
 		size_t buffersize = _frameWidth * bufferheight * 2;  // width * height * bytes per pixel
 
+		// Setup callback to send pool references to the VM
+		const char* signature = "(Ljava/nio/ByteBuffer;I)V";
+		const char* funcname = "nativePoolSetup";
+		jclass cls = _env->GetObjectClass(_usbtvObj);
+		jmethodID poolSetupMethod = _env->GetMethodID(cls, funcname, signature);
+
 		// init frame pool
 		for (uint8_t i = 0; i < _framePoolSize; i++) {
 			_framePool[i] = new UsbTvFrame;
@@ -421,11 +434,15 @@ void UsbTvDriver::allocateFramePool() {
 			_framePool[i]->flags = 0;
 			_framePool[i]->lock.clear(std::memory_order_release);
 
-			// Create a DirectByteBuffer around the frame's buffer to easily send back to java
+			// Create a DirectByteBuffer around the frame's buffer, then notify JVM so
+			// it can create a matching pool with references to the buffers
 			jobject bb = _env->NewDirectByteBuffer(_framePool[i]->buffer, buffersize);
 			_framePool[i]->byteBuffer = _env->NewGlobalRef(bb);
+			_env->CallVoidMethod(_usbtvObj, poolSetupMethod, bb, (jint)i);
 			_env->DeleteLocalRef(bb);
 		}
+
+		_env->DeleteLocalRef(cls);
 	}
 }
 
@@ -695,7 +712,6 @@ void UsbTvDriver::addCompleteFrameToQueue() {
 	} else {
 		LOGD("Frame Dropped, no space in process Queue. ID: %d", _currentFrameId);
 		_droppedFrameCounter++;
-		// TODO: memset buffer to zeroes?
 		_usbInputFrame->flags = FRAME_START;
 	}
 }
@@ -733,14 +749,7 @@ void frame_process_thread(Driver::ThreadContext* ctx) {
 		/**
 		 * Update: Keeping a java side frame pool seems to have eliminated the high spikes.
 		 * Process times typically range between less than 1ms to 5ms, with spikes no higher
-		 * than 10 ms.  This is all acceptable as it falls in acceptable parameters.
-		 *
-		 * TODO:  A better implementation for this is to wrap a local frame buffer in a
-		 * direct bytebuffer, then send that reference to java.  Java apps can then
-		 * keep a local buffer of type byte[] or create as many as they would like, and
-		 * copy frame data there using the ByteBuffer's bulk get() method.   Finally, when
-		 * the Java app is done it can return the buffer to the local frame pool by
-		 * calling a function that releases its lock.
+		 * than 10 ms.  This  falls in acceptable parameters.
 		 */
 		auto startTime = std::chrono::system_clock::now();
 #endif
@@ -754,7 +763,7 @@ void frame_process_thread(Driver::ThreadContext* ctx) {
 		}
 
 		if (*(ctx->shouldRender)) {
-			// TODO: call render frame : WILL PROBABLY NOT DO THIS, JAVA RENDERER SEEMS FAST ENOUGH
+			// TODO: call render frame
 		}
 
 

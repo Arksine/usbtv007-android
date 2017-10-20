@@ -40,8 +40,6 @@ import timber.log.Timber;
 public class UsbTv {
     public static final boolean DEBUG = true;  // TODO: set to false for release
 
-    private static final int FRAME_POOL_SIZE = 6;
-
     public interface DriverCallbacks {
         void onOpen(IUsbTvDriver driver, boolean status);
         void onClose();
@@ -167,6 +165,7 @@ public class UsbTv {
     private AtomicBoolean mIsStreaming = new AtomicBoolean(false);
 
     private DeviceParams mDeviceParams;
+    private UsbTvFrame[] mLocalPool;
 
     private DriverCallbacks mDriverCallbacks;
     private onFrameReceivedListener mOnFrameReceivedListener = null;
@@ -327,8 +326,15 @@ public class UsbTv {
         Timber.v("Endpoint description reported max size: %d", ep.getMaxPacketSize());
         int maxPacketSize = calculateMaxEndpointSize(ep.getMaxPacketSize());
 
+        // A pool that mirrors the Native Frame pool.  The local pool is an array of
+        // UsbTvFrames, which contain a reference to a Direct ByteBuffer that
+        // shares memory with the buffers created by the native driver.  This allows
+        // for easy memory sharing between JNI and the JVM.
+        mLocalPool = new UsbTvFrame[mDeviceParams.getFramePoolSize()];
+
        if (!initialize(mUsbtvConnection.getFileDescriptor(),
-               USBTV_VIDEO_ENDPOINT, maxPacketSize, FRAME_POOL_SIZE,
+               USBTV_VIDEO_ENDPOINT, maxPacketSize,
+               mDeviceParams.getFramePoolSize(),
                mDeviceParams.getInputSelection().ordinal(),
                mDeviceParams.getTvNorm().ordinal(),
                mDeviceParams.getScanType().ordinal())) {
@@ -392,15 +398,16 @@ public class UsbTv {
     }
 
     // Callback From JNI
-    // TODO:  Would keeping an array of USBTVFrames that matches up with the
-    // Native Frames be better?  It would lower the overhead over creating
-    // and setting a new frame each time.  Just send the index to this
-    // callback, set the frameId, and go.  It would require a second
-    // java callback that executes when the native frame pool is allocated.
-    public void frameCallback(ByteBuffer frameBuf, int poolIndex, int frameId) {
+    public void nativeFrameCallback(int poolIndex, int frameId) {
         if (mOnFrameReceivedListener != null) {
-            mOnFrameReceivedListener.onFrameReceived(new UsbTvFrame(mDeviceParams, frameBuf,
-                    poolIndex, frameId));
+            mLocalPool[poolIndex].setFrameId(frameId);
+            mOnFrameReceivedListener.onFrameReceived(mLocalPool[poolIndex]);
+        }
+    }
+
+    public void nativePoolSetup(ByteBuffer frameBuf, int poolIndex) {
+        if (mLocalPool != null) {
+            mLocalPool[poolIndex] = new UsbTvFrame(mDeviceParams, frameBuf, poolIndex);
         }
     }
 

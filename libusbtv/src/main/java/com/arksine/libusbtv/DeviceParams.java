@@ -62,7 +62,7 @@ public class DeviceParams {
         return mInput;
     }
 
-    public int getframePoolSize() {
+    public int getFramePoolSize() {
         return mFramePoolSize;
     }
 

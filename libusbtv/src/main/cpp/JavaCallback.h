@@ -69,7 +69,7 @@ public:
 
 		if (_threadAttached) {
 			LOGD("Thread successfully attached");
-			const char *cbsig = "(Ljava/nio/ByteBuffer;II)V";
+			const char *cbsig = "(II)V";
 			_cbMethod = _env->GetMethodID(_methodClass, _functionName.c_str(), cbsig);
 		} else {
 			LOGD("Unable to attach thread");
@@ -85,8 +85,8 @@ public:
 
 	void invoke(UsbTvFrame* frame) {
 		if (_threadAttached) {
-			_env->CallVoidMethod(_methodParent, _cbMethod, frame->byteBuffer,
-			                     (jint)frame->poolIndex, (jint) frame->frameId);
+			_env->CallVoidMethod(_methodParent, _cbMethod, (jint)frame->poolIndex,
+			                     (jint) frame->frameId);
 		}
 	}
 };

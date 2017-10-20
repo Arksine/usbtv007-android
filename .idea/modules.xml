@@ -2,9 +2,9 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/exampleapp/exampleapp.iml" filepath="$PROJECT_DIR$/exampleapp/exampleapp.iml" />
       <module fileurl="file://$PROJECT_DIR$/libusbtv/libusbtv.iml" filepath="$PROJECT_DIR$/libusbtv/libusbtv.iml" />
       <module fileurl="file://$PROJECT_DIR$/usbtv007-android.iml" filepath="$PROJECT_DIR$/usbtv007-android.iml" />
+      <module fileurl="file://$PROJECT_DIR$/usbtvsample1/usbtvsample1.iml" filepath="$PROJECT_DIR$/usbtvsample1/usbtvsample1.iml" />
     </modules>
   </component>
 </project>

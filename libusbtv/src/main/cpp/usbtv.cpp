@@ -36,8 +36,13 @@ JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_initialize(JNIEnv* je
                                                                       jint input,
                                                                       jint norm,
                                                                       jint scanType) {
+	if (javaVm == nullptr) {
+		LOGE("Error, Java VM pointer is not initialized");
+		return (jboolean) false;
+	}
+
 	if (usbtv != nullptr) {
-		LOGE("UsbTV already initialized, dispose prior to a new initialization");
+		LOGE("UsbTvDriver already initialized, dispose prior to a new initialization");
 		return (jboolean) false;
 	}
 
@@ -45,11 +50,21 @@ JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_initialize(JNIEnv* je
 		delete callback;
 	}
 
-	callback = new JavaCallback(javaVm, thisObj, "frameCallback");
+	callback = new JavaCallback(javaVm, thisObj, "nativeFrameCallback");
 
-	usbtv = new UsbTvDriver(jenv, callback, (int)fd, (int)isoEndpoint, (int)maxIsoPacketSize,
-	                        (int)framePoolSize, (int)input, (int)norm, (int)scanType);
+	usbtv = new UsbTvDriver(jenv, thisObj, callback, (int)fd, (int)isoEndpoint,
+	                        (int)maxIsoPacketSize, (int)framePoolSize, (int)input,
+	                        (int)norm, (int)scanType);
 
+	if (!usbtv->isInitialized()) {
+		LOGE("Error Initializing UsbTV Driver");
+		delete callback;
+		delete usbtv;
+		callback = nullptr;
+		usbtv = nullptr;
+
+		return (jboolean) false;
+	}
 
 	return (jboolean)true;
 

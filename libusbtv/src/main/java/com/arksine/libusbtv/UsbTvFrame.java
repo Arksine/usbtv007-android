@@ -12,15 +12,15 @@ import timber.log.Timber;
 public class UsbTvFrame {
 
     private final ByteBuffer mFrameBuf;
-    private final int mFrameId;
+    private int mFrameId;
     private final int mPoolIndex;
     private final DeviceParams mParams;
 
-    public UsbTvFrame(DeviceParams params, ByteBuffer frameBuf,  int poolIndex, int frameId) {
+    UsbTvFrame(DeviceParams params, ByteBuffer frameBuf, int poolIndex) {
         mFrameBuf = frameBuf;
         mParams = params;
         mPoolIndex = poolIndex;
-        mFrameId = frameId;
+        mFrameId = -1;
     }
 
     public ByteBuffer getFrameBuf() {
@@ -53,6 +53,11 @@ public class UsbTvFrame {
         return mFrameId;
     }
 
+    void setFrameId(int id) {
+        mFrameId = id;
+    }
+
+
 
     /**
      * Creates a deep copy of the frame.  Frame copies do not keep
@@ -68,7 +73,9 @@ public class UsbTvFrame {
         mFrameBuf.rewind();
         clone.flip();
 
-        return new UsbTvFrame(mParams, clone, -1, mFrameId);
+        UsbTvFrame frame = new UsbTvFrame(mParams, clone, -1);
+        frame.mFrameId = mFrameId;
+        return frame;
     }
 
     /**

@@ -27,7 +27,8 @@ class UsbTvDriver {
 private:
 	bool _initalized; // Variable to check to make sure constructor successfully completed
 
-	JNIEnv* _env;     // Reference to Java environment from local thread
+	JNIEnv* _env;        // Reference to Java environment from local thread
+	jobject _usbtvObj;   // Global reference to Java UsbTv Object
 
 	/* Video Members */
 	TvInput     _input;
@@ -86,8 +87,8 @@ private:
 	void addCompleteFrameToQueue();
 
 public:
-	UsbTvDriver(JNIEnv *env, JavaCallback* cb, int fd, int isoEndpoint, int maxIsoPacketSize,
-	            int framePoolSize, int input, int norm, int scanType);
+	UsbTvDriver(JNIEnv *env, jobject utvObj, JavaCallback* cb, int fd, int isoEndpoint,
+	            int maxIsoPacketSize, int framePoolSize, int input, int norm, int scanType);
 	~UsbTvDriver();
 
 	bool isInitialized() { return _initalized;}
