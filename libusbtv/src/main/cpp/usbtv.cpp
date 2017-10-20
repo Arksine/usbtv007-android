@@ -50,7 +50,7 @@ JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_initialize(JNIEnv* je
 		delete callback;
 	}
 
-	callback = new JavaCallback(javaVm, thisObj, "nativeFrameCallback");
+	callback = new JavaCallback(javaVm, thisObj, "nativeFrameCallback", "(II)V");
 
 	usbtv = new UsbTvDriver(jenv, thisObj, callback, (int)fd, (int)isoEndpoint,
 	                        (int)maxIsoPacketSize, (int)framePoolSize, (int)input,

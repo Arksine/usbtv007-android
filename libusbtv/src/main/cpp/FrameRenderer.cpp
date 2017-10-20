@@ -3,3 +3,11 @@
 //
 
 #include "FrameRenderer.h"
+
+FrameRenderer::FrameRenderer() {
+
+}
+
+FrameRenderer::~FrameRenderer() {
+
+}

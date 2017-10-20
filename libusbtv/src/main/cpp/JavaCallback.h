@@ -17,6 +17,7 @@ class JavaCallback {
 private:
 	JavaVM*     _javaVm;
 	std::string _functionName;
+	std::string _functionSignature;
 	JNIEnv*     _env;
 	jmethodID   _cbMethod;
 	jclass      _methodClass;
@@ -45,10 +46,11 @@ public:
 	// TODO: when color space and scantype are added to UsbTvFrame, they will
 	// also need to be added to the callback.  This will change the signature
 	// below and the invoke member function
-	JavaCallback(JavaVM* jvm, jobject parent, std::string funcName) {
+	JavaCallback(JavaVM* jvm, jobject parent, std::string funcName, std::string funcSignature) {
 		_javaVm = jvm;
 		_threadAttached = false;
 		_functionName = funcName;
+		_functionSignature = funcSignature;
 		if(setEnv()) {
 			_methodParent = _env->NewGlobalRef(parent);
 			jclass cls = _env->GetObjectClass(parent);
@@ -69,8 +71,8 @@ public:
 
 		if (_threadAttached) {
 			LOGD("Thread successfully attached");
-			const char *cbsig = "(II)V";
-			_cbMethod = _env->GetMethodID(_methodClass, _functionName.c_str(), cbsig);
+			_cbMethod = _env->GetMethodID(_methodClass, _functionName.c_str(),
+			                              _functionSignature.c_str());
 		} else {
 			LOGD("Unable to attach thread");
 		}

@@ -6,7 +6,10 @@
 #define USBTV007_ANDROID_FRAMERENDERER_H
 
 #include "usbtv_definitions.h"
+//#include "RenderScript.h"
 // TODO: Just stubbing out a few functions, will implement later
+
+//using namespace android::RSC;
 
 /**
  *

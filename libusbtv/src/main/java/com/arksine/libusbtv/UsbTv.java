@@ -18,6 +18,7 @@ import android.support.annotation.NonNull;
 import android.view.Surface;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -407,6 +408,7 @@ public class UsbTv {
 
     public void nativePoolSetup(ByteBuffer frameBuf, int poolIndex) {
         if (mLocalPool != null) {
+            frameBuf.order(ByteOrder.nativeOrder());
             mLocalPool[poolIndex] = new UsbTvFrame(mDeviceParams, frameBuf, poolIndex);
         }
     }
