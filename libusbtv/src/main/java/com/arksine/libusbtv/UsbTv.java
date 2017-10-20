@@ -173,7 +173,6 @@ public class UsbTv {
     private Handler mNativeHander;
 
     private static ArrayList<UsbTv> mReferenceList = new ArrayList<>();
-    private static UsbTvRenderer mRenderer = null;
 
     static {
         System.loadLibrary("usbtv");
@@ -260,15 +259,6 @@ public class UsbTv {
         }
 
         return devList;
-    }
-
-    public static UsbTvRenderer getRenderer(Context context, Surface surface) {
-        if (mRenderer == null) {
-            mRenderer = new UsbTvRenderer(context, surface);
-        } else {
-            mRenderer.setSurface(surface);
-        }
-        return mRenderer;
     }
 
     private UsbTv(@NonNull Context appContext, @NonNull UsbDevice dev,
@@ -402,7 +392,11 @@ public class UsbTv {
     }
 
     // Callback From JNI
-    // TODO: Replace the
+    // TODO:  Would keeping an array of USBTVFrames that matches up with the
+    // Native Frames be better?  It would lower the overhead over creating
+    // and setting a new frame each time.  Just send the index to this
+    // callback, set the frameId, and go.  It would require a second
+    // java callback that executes when the native frame pool is allocated.
     public void frameCallback(ByteBuffer frameBuf, int poolIndex, int frameId) {
         if (mOnFrameReceivedListener != null) {
             mOnFrameReceivedListener.onFrameReceived(new UsbTvFrame(mDeviceParams, frameBuf,

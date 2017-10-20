@@ -1,18 +1,16 @@
-package com.arksine.libusbtv;
+package com.arksine.exampleapp;
 
 
 import android.content.Context;
-import android.os.Handler;
-import android.os.HandlerThread;
-import android.os.Looper;
-import android.os.Message;
-import android.os.Process;
 import android.renderscript.Allocation;
 import android.renderscript.Element;
 import android.renderscript.RenderScript;
 import android.renderscript.Type;
 import android.support.annotation.NonNull;
 import android.view.Surface;
+
+import com.arksine.libusbtv.DeviceParams;
+import com.arksine.libusbtv.UsbTvFrame;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -22,11 +20,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import timber.log.Timber;
 
 /**
- * TODO: Now that I track deviceparams use them to initialize allocations rather
- * than doing so when a frame is recd
+ *      TODO: Take this out of the libusbtv package and put it in the exampleapp package.
+ *      The integrated renderer will be done in native code
  */
 
-public class UsbTvRenderer {
+public class TestRenderer {
 
     private Thread mRenderThread;
     private Surface mRenderSurface;
@@ -36,10 +34,9 @@ public class UsbTvRenderer {
     private ScriptC_ConvertYUYV mConvertKernel;
     private AtomicBoolean mThreadRunning = new AtomicBoolean(false);
 
-    // TODO: try changing this to a bitmap that shares its backing store with the input allocation
     private byte[] mRenderBuf;
 
-    private BlockingQueue<UsbTvFrame> mFrameQueue = new ArrayBlockingQueue<UsbTvFrame>(10, true);
+    private BlockingQueue<UsbTvFrame> mFrameQueue;
 
     private final Runnable mRenderRunnable = new Runnable() {
         @Override
@@ -102,7 +99,8 @@ public class UsbTvRenderer {
                 frameCount++;
                 if (frameCount >= 120) {
                     frameCount = 0;
-                    Timber.d("Last 120 Frames - High Render Time: %d ms\nLow Render Time: %d ms", highTime, lowTime);
+                    Timber.d("Last 120 Frames - High Render Time: %d ms\nLow Render Time: %d ms",
+                            highTime, lowTime);
                     highTime = 0;
                     lowTime  = 1000;
 
@@ -111,8 +109,7 @@ public class UsbTvRenderer {
         }
     };
 
-    UsbTvRenderer(@NonNull Context context, Surface surface) {
-
+    public TestRenderer(@NonNull Context context, Surface surface) {
         mRs = RenderScript.create(context);
         mConvertKernel = new ScriptC_ConvertYUYV(mRs);
         mRenderSurface = surface;
@@ -120,6 +117,7 @@ public class UsbTvRenderer {
 
     public void processFrame(UsbTvFrame frame) {
         if (!mFrameQueue.offer(frame)) {
+            frame.returnFrame();
             Timber.d("Frame skipped, queue full");
         }
     }
@@ -159,6 +157,7 @@ public class UsbTvRenderer {
 
 
     private void initAllocations (DeviceParams params) {
+        mFrameQueue = new ArrayBlockingQueue<>(params.getframePoolSize(), true);
         mRenderBuf = new byte[params.getFrameSizeInBytes()];
 
         Element inputElement = Element.U8_4(mRs);

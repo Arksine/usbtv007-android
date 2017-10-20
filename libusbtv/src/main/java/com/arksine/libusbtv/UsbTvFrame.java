@@ -2,6 +2,8 @@ package com.arksine.libusbtv;
 
 import java.nio.ByteBuffer;
 
+import timber.log.Timber;
+
 /**
  * Encapsulates a Frame received from the UsbTv device.  It may be passed back to the user
  * through a onFrameReceivedListener, or it will be used to render to a surface
@@ -74,7 +76,9 @@ public class UsbTvFrame {
      */
     public void returnFrame() {
         mFrameBuf.rewind();
-        returnFrameToPool(mPoolIndex);
+        if (!returnFrameToPool(mPoolIndex)) {
+            Timber.d("Error returning frame to pool");
+        }
     }
 
     public UsbTvFrame returnAndCopy() {

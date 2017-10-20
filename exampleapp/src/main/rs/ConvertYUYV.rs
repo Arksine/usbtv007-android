@@ -1,5 +1,5 @@
 #pragma version(1)
-#pragma rs java_package_name(com.arksine.libusbtv)
+#pragma rs java_package_name(com.arksine.exampleapp)
 #pragma rs_fp_relaxed
 
 rs_allocation output;

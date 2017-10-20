@@ -14,7 +14,6 @@ import com.arksine.libusbtv.DeviceParams;
 import com.arksine.libusbtv.IUsbTvDriver;
 import com.arksine.libusbtv.UsbTv;
 import com.arksine.libusbtv.UsbTvFrame;
-import com.arksine.libusbtv.UsbTvRenderer;
 
 import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -34,7 +33,7 @@ public class MainActivity extends AppCompatActivity {
 
 
     private IUsbTvDriver mTestDriver;
-    private UsbTvRenderer mRenderer = null;
+    private TestRenderer mRenderer = null;
 
     private UsbTv.onFrameReceivedListener mOnFrameReceivedListener = new UsbTv.onFrameReceivedListener() {
         @Override
@@ -58,7 +57,7 @@ public class MainActivity extends AppCompatActivity {
                     if (mPreviewSurface != null) {
                         mIsStreaming.set(true);
                         if (mRenderer == null) {
-                            mRenderer = UsbTv.getRenderer(getApplicationContext(), mPreviewSurface);
+                            mRenderer = new TestRenderer(getApplicationContext(), mPreviewSurface);
                         } else {
                             mRenderer.setSurface(mPreviewSurface);
                         }
@@ -186,7 +185,7 @@ public class MainActivity extends AppCompatActivity {
             synchronized (CAM_LOCK) {
                 if (mTestDriver!= null) {
                     if (mRenderer == null) {
-                        mRenderer = UsbTv.getRenderer(getApplicationContext(), mPreviewSurface);
+                        mRenderer = new TestRenderer(getApplicationContext(), mPreviewSurface);
                     } else {
                         mRenderer.setSurface(mPreviewSurface);
                     }

@@ -749,9 +749,6 @@ void *frameProcessThread(void* context) {
 			// TODO: call render frame : WILL PROBABLY NOT DO THIS, JAVA RENDERER SEEMS FAST ENOUGH
 		}
 
-		// TODO: Either Java or the local frame renderer will clear the lock
-		frame->lock.clear(std::memory_order_release);
-
 
 #if defined(PROFILE_FRAME)
 		auto processTime = std::chrono::duration_cast<std::chrono::milliseconds>(

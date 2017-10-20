@@ -162,7 +162,7 @@ JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTvFrame_returnFrameToPoo
                                                                               jobject thisObj,
                                                                               jint poolIndex) {
 	if (usbtv != nullptr) {
-		return (jboolean) usbtv->clearFrameLock(poolIndex);
+		return (jboolean) usbtv->clearFrameLock((int)poolIndex);
 	} else {
 		return (jboolean) false;
 	}
