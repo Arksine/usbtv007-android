@@ -5,6 +5,7 @@
       <module fileurl="file://$PROJECT_DIR$/libusbtv/libusbtv.iml" filepath="$PROJECT_DIR$/libusbtv/libusbtv.iml" />
       <module fileurl="file://$PROJECT_DIR$/usbtv007-android.iml" filepath="$PROJECT_DIR$/usbtv007-android.iml" />
       <module fileurl="file://$PROJECT_DIR$/usbtvsample1/usbtvsample1.iml" filepath="$PROJECT_DIR$/usbtvsample1/usbtvsample1.iml" />
+      <module fileurl="file://$PROJECT_DIR$/usbtvsample2/usbtvsample2.iml" filepath="$PROJECT_DIR$/usbtvsample2/usbtvsample2.iml" />
     </modules>
   </component>
 </project>
