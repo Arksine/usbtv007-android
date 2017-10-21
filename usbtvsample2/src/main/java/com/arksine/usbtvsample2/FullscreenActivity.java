@@ -3,6 +3,7 @@ package com.arksine.usbtvsample2;
 import android.annotation.SuppressLint;
 import android.graphics.PixelFormat;
 import android.hardware.usb.UsbDevice;
+import android.opengl.GLSurfaceView;
 import android.os.Bundle;
 import android.os.Handler;
 import android.support.v7.app.ActionBar;
@@ -103,15 +104,14 @@ public class FullscreenActivity extends AppCompatActivity {
     };
 
     private FrameLayout mRootLayout;
-    private SurfaceView mCameraView;
-    private Surface mPreviewSurface;
-    private SurfaceHolder mSurfaceHolder;
+    private GLSurfaceView mCameraView;
 
     private boolean mIsFullScreen = true;
-    AtomicBoolean mIsStreaming = new AtomicBoolean(false);
 
-    private IUsbTvDriver mTestDriver;
+    private IUsbTvDriver mTestDriver = null;
+    private DeviceParams mUsbTvParams = null;
     private OGLRenderer mRenderer = null;
+    private volatile boolean mSurfaceCreated = false;
 
     private Runnable mSetAspectRatio = new Runnable() {
         @Override
@@ -120,14 +120,6 @@ public class FullscreenActivity extends AppCompatActivity {
         }
     };
 
-    private UsbTv.onFrameReceivedListener mOnFrameReceivedListener = new UsbTv.onFrameReceivedListener() {
-        @Override
-        public void onFrameReceived(UsbTvFrame frame) {
-            if (mRenderer != null) {
-                mRenderer.processFrame(frame);
-            }
-        }
-    };
 
     private final UsbTv.DriverCallbacks mCallbacks = new UsbTv.DriverCallbacks() {
         @Override
@@ -136,17 +128,8 @@ public class FullscreenActivity extends AppCompatActivity {
             synchronized (CAM_LOCK) {
                 mTestDriver = driver;
                 if (mTestDriver != null) {
-                    mTestDriver.setFrameCallback(mOnFrameReceivedListener);
-
-                    // If I have a preview surface, we can fetch the renderer and start it
-                    if (mPreviewSurface != null) {
-                        mIsStreaming.set(true);
-                        if (mRenderer == null) {
-           // TODO:                mRenderer = new OGLRenderer(getApplicationContext(), mPreviewSurface);
-                        } else {
-                            // TODO:              mRenderer.setSurface(mPreviewSurface);
-                        }
-                        // TODO:         mRenderer.startRenderer(mTestDriver.getDeviceParams());
+                    mTestDriver.setFrameCallback(mRenderer);
+                    if (mSurfaceCreated && !mTestDriver.isStreaming()) {
                         mTestDriver.startStreaming();
                     }
                 }
@@ -157,17 +140,10 @@ public class FullscreenActivity extends AppCompatActivity {
         public void onClose() {
             Timber.i("UsbTv Device Closed");
 
-            if (mRenderer != null) {
-                // TODO:            mRenderer.stopRenderer();
-            }
-
-            if (mPreviewSurface != null) {
-                mPreviewSurface.release();
-            }
-
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
+                    mCameraView.onPause();
                     finish();
                 }
             });
@@ -188,7 +164,7 @@ public class FullscreenActivity extends AppCompatActivity {
 
 
         mRootLayout = (FrameLayout) findViewById(R.id.activity_main);
-        mCameraView = (SurfaceView) findViewById(R.id.camera_view);
+        mCameraView = (GLSurfaceView) findViewById(R.id.camera_view);
 
         // Set up the user interaction to manually show or hide the system UI.
         mCameraView.setOnClickListener(new View.OnClickListener() {
@@ -201,7 +177,7 @@ public class FullscreenActivity extends AppCompatActivity {
         /*
             Create Usbtv Device Params to initialize device settings.
          */
-        DeviceParams params = new DeviceParams.Builder()
+        mUsbTvParams = new DeviceParams.Builder()
                 .setCallbacks(mCallbacks)
                 .useLibraryReceiver(true)
                 .setInput(UsbTv.InputSelection.COMPOSITE)
@@ -209,24 +185,101 @@ public class FullscreenActivity extends AppCompatActivity {
                 .setTvNorm(UsbTv.TvNorm.NTSC)
                 .build();
 
-        /*
-            After Getting the Surface Holder, you need to set its dimensions and format
-            If you want to use the built-in renderer.  Note that if you change a setting
-            that alters the incoming frame size, you will need a new surface with a new
-            fixed size.  The best way to do this is to stop streaming, then reset the
-            frame size which will trigger the onSurfaceChanged listener.
-         */
-        mSurfaceHolder = mCameraView.getHolder();
-        mSurfaceHolder.setFixedSize(params.getFrameWidth(), params.getFrameHeight());
-        mSurfaceHolder.setFormat(PixelFormat.RGBA_8888);
-        mSurfaceHolder.addCallback(mCameraViewCallback);
+        // Set up the OGL Renderer and attach it to the GLSurface view.
+        mRenderer = new OGLRenderer(this, mUsbTvParams);
+        mRenderer.setOnSurfaceCratedListener(new OGLRenderer.OnSurfaceCreatedListener() {
+            @Override
+            public void onGLSurfaceCreated() {
+                // Wait until the GL Surface is created before attempting to stream
+                synchronized (CAM_LOCK) {
+                    mSurfaceCreated = true;
+                    if (mTestDriver != null && !mTestDriver.isStreaming()) {
+                        mTestDriver.startStreaming();
+                    }
+                }
 
+            }
+        });
+        mCameraView.setEGLContextClientVersion(2);
+        mCameraView.setRenderer(mRenderer);
+
+        usbTvOpen();
+    }
+
+    @Override
+    protected void onPostCreate(Bundle savedInstanceState) {
+        super.onPostCreate(savedInstanceState);
+
+        // Trigger the initial hide() shortly after the activity has been
+        // created, to briefly hint to the user that UI controls
+        // are available.
+        delayedHide(100);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        mCameraView.onPause();
+        // stop streaming if streaming
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        mCameraView.onResume();
+        // start streaming if not streaming
+    }
+
+    @Override
+    public void onBackPressed() {
+
+        mRootLayout.removeCallbacks(mSetAspectRatio);
+        //  I need to stop the renderer here, its possible (although unlikely) that the
+        // renderer could reference freed memory if its still running when shared memory is
+        // freed in jni
+
+
+        synchronized (CAM_LOCK) {
+            if (mTestDriver != null && mTestDriver.isOpen()) {
+                mTestDriver.close();
+            } else {
+                super.onBackPressed();
+            }
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+
+        if (mCameraView == null) {
+            return;
+        }
+
+        if (hasFocus) {
+            mRootLayout.post(mSetAspectRatio);
+        }
+    }
+
+    private void usbTvOpen() {
+        if (mTestDriver != null && mTestDriver.isOpen()) {
+            if (mTestDriver.isStreaming()) {
+                Timber.i("Device Already Open and Streaming");
+            } else {
+                Timber.i("Device Already Open, not Streaming");
+            }
+            return;
+        }
+
+        if (mUsbTvParams == null) {
+            Timber.e("Cannot open, Params not initialized");
+        }
         /*
             Enumerate available UsbTv Devices.  If there are more than one connected then
             you will need to parse and decide which one you want to use based on
             criteria of your choosing.
          */
-        ArrayList<UsbDevice> devList = UsbTv.enumerateUsbtvDevices(this);
+        ArrayList<UsbDevice> devList = UsbTv.enumerateUsbtvDevices(getApplicationContext());
         UsbDevice device = null;
         if (!devList.isEmpty()) {
             device = devList.get(0);
@@ -250,53 +303,11 @@ public class FullscreenActivity extends AppCompatActivity {
          */
         if (device != null) {
             Timber.i("Open Device");
-            UsbTv.open(device, this, params);
+            UsbTv.open(device, getApplicationContext(), mUsbTvParams);
         } else {
             Timber.i("Can't open");
         }
     }
-
-    @Override
-    protected void onPostCreate(Bundle savedInstanceState) {
-        super.onPostCreate(savedInstanceState);
-
-        // Trigger the initial hide() shortly after the activity has been
-        // created, to briefly hint to the user that UI controls
-        // are available.
-        delayedHide(100);
-    }
-
-    @Override
-    public void onBackPressed() {
-
-        mRootLayout.removeCallbacks(mSetAspectRatio);
-        //  I need to stop the renderer here, its possible (although unlikely) that the
-        // renderer could reference freed memory if its still running when shared memory is
-        // freed in jni
-        if (mRenderer != null) {
-            // TODO:          mRenderer.stopRenderer();
-        }
-
-        if (mTestDriver != null && mTestDriver.isOpen()) {
-            mTestDriver.close();
-        } else {
-            super.onBackPressed();
-        }
-    }
-
-    @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-
-        if (mCameraView == null) {
-            return;
-        }
-
-        if (hasFocus) {
-            mRootLayout.post(mSetAspectRatio);
-        }
-    }
-
 
     private void toggle() {
         if (mVisible) {
@@ -375,50 +386,7 @@ public class FullscreenActivity extends AppCompatActivity {
         Timber.v("Current view size %d x %d: ", mCameraView.getWidth(), mCameraView.getHeight());
     }
 
-    private final SurfaceHolder.Callback mCameraViewCallback = new SurfaceHolder.Callback() {
-        @Override
-        public void surfaceCreated(final SurfaceHolder holder) {
-            Timber.v("Camera surfaceCreated:");
-        }
 
-        @Override
-        public void surfaceChanged(final SurfaceHolder holder, final int format, final int width, final int height) {
-            if ((width == 0) || (height == 0)) return;
-            Timber.v("Camera surfaceChanged:");
-            mPreviewSurface = holder.getSurface();
-            synchronized (CAM_LOCK) {
-                if (mTestDriver!= null) {
-                    if (mRenderer == null) {
-                        // TODO:           mRenderer = new TestRenderer(getApplicationContext(), mPreviewSurface);
-                    } else {
-                        // TODO:         mRenderer.setSurface(mPreviewSurface);
-                    }
-
-                    // If not streaming, start
-                    if (mIsStreaming.compareAndSet(false, true)) {
-                        // TODO:    mRenderer.startRenderer(mTestDriver.getDeviceParams());
-                        mTestDriver.startStreaming();
-                    }
-                }
-            }
-        }
-
-        @Override
-        public void surfaceDestroyed(final SurfaceHolder holder) {
-            Timber.v("Camera surfaceDestroyed:");
-            synchronized (CAM_LOCK) {
-                if (mRenderer != null) {
-                    // TODO:    mRenderer.stopRenderer();
-                }
-
-                if (mTestDriver != null && mIsStreaming.get()) {
-                    mTestDriver.stopStreaming();
-                }
-                mIsStreaming.set(false);
-                mPreviewSurface = null;
-            }
-        }
-    };
 
 
 }

@@ -1,7 +1,7 @@
 package com.arksine.usbtvsample2;
+import android.content.Context;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
-import android.view.Surface;
 
 import com.arksine.libusbtv.DeviceParams;
 import com.arksine.libusbtv.UsbTv;
@@ -14,7 +14,6 @@ import java.nio.ShortBuffer;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
@@ -25,55 +24,44 @@ import timber.log.Timber;
  * Created by Eric on 10/20/2017.
  */
 
-/**
- * TODO : I think I know how  to accomplish this. I need two textures.  The first
- * is a texture backed by an array of bytes that matches the frame size (ie 720 x 240) for
- * a progressive frame.  This buffer will simply alternate 0s and 1s.  If its zero, the y-value
- * in the primary texture is the x value.  Otherwise it will be the z value(third).  If I am
- * understanding GLSL correctly, this will cause the fragment shader to operate on each pixel
- * of the main buffer twice (I hope).  This Texture should be of type GLES20.GL_LUMINANCE, which
- * represents a single byte.
- *
- * ie:  mBackingBuffer = bytebuffer of alternating 0s and 1s  -- Make it a directbytebuffer with native byteorder
- * GLES20.glTexImage2D(   GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE, 720, 240, 0,
- * GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, mBackingBuffer);
- *
- *
- * The main texture should be of typem GLES20.GL_RGBA.  I believe its with should be HALF the
- * other buffer, and its height should be equal.
- *
- * ie:  frame.getBuffer() = direct bytebuffer holding frame
- * GLES20.glTexImage2D(   GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, 720/2, 240, 0,
- * GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, frame.getBuffer());
- *
- *
- * Should probably separate the Vertices buffers into Position and Texture vertices.  That way
- * I don't need to specify a strinde
- *
- */
 
+/**
+ * Open GL Frame Renderer.  Converts YUYV (YUY2) frames to RGB
+ */
 public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceivedListener {
 
+    interface OnSurfaceCreatedListener {
+        void onGLSurfaceCreated();
+    }
+
+    private OnSurfaceCreatedListener mSurfaceListener = null;
+    private Context mContext;       // Dont really need a context, but better to keep one for later
+                                    // when attempting to get Shaders from resource
     private BlockingQueue<UsbTvFrame> mFrameQueue;
     private DeviceParams mParams;
 
-
-    // TODO: Allocate all of these direct! Set byte order to native order
     private FloatBuffer mTexVertexBuf;
     private FloatBuffer mPosVertexBuf;
     private ShortBuffer mIndicesBuf;
-    private ByteBuffer mYUVindexBuf;
+    private float mScreenWidth;
 
     private int mShaderProgramId;
     private int mPositionAttr;
     private int mTextureAttr;
     private int mYUVTextureId;
-    private int mPositonTextureId;
+    private int mUniformWidthId;
 
-    public OGLRenderer(DeviceParams params) {
+
+    public OGLRenderer(Context context, DeviceParams params) {
+        mContext = context;
         mParams = params;
+        mScreenWidth = mParams.getFrameWidth();
         mFrameQueue = new ArrayBlockingQueue<>(params.getFramePoolSize(), true);
         initByteBuffers();
+    }
+
+    public void setOnSurfaceCratedListener(OnSurfaceCreatedListener listener) {
+        mSurfaceListener = listener;
     }
 
     // TODO: I should have a function that chances render Parameters if the device params change
@@ -102,10 +90,37 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
             return;
         }
 
-        // TODO: Draw Frame
+        // Clear the color buffer
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
 
+        // User Shader Program
+        GLES20.glUseProgram(mShaderProgramId);
 
+        // Set up Vertex Buffers
+        mPosVertexBuf.position(0);
+        GLES20.glVertexAttribPointer(mPositionAttr, 2, GLES20.GL_FLOAT, false, 0, mPosVertexBuf);
+        mTexVertexBuf.position(0);
+        GLES20.glVertexAttribPointer(mTextureAttr, 2, GLES20.GL_FLOAT, false, 0, mTexVertexBuf);
 
+        GLES20.glEnableVertexAttribArray(mPositionAttr);
+        GLES20.glEnableVertexAttribArray(mTextureAttr);
+
+        // Set up texture
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
+        GLES20.glUniform1i(mYUVTextureId, 1);
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, frame.getWidth()/2,
+                frame.getHeight(), 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, frame.getFrameBuf());
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+
+        // Set up screen widht
+        GLES20.glUniform1f(mUniformWidthId, mScreenWidth);
+
+        // Draw
+        mIndicesBuf.position(0);
+        GLES20.glDrawElements(GLES20.GL_TRIANGLES, 6, GLES20.GL_UNSIGNED_SHORT, mIndicesBuf);
 
         frame.returnFrame();
     }
@@ -113,6 +128,7 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
     @Override
     public void onSurfaceChanged(GL10 gl, int width, int height) {
         // should make sure the viewport always fills the screen
+        mScreenWidth = (float) width;
         GLES20.glViewport(0, 0, width, height);
     }
 
@@ -125,24 +141,34 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
         mPositionAttr = GLES20.glGetAttribLocation(mShaderProgramId, "a_position");
         mTextureAttr = GLES20.glGetAttribLocation(mShaderProgramId, "a_texCoord");
 
-        // TODO: Get YUV and Position texture IDs and complete init
+        GLES20.glEnable(GLES20.GL_TEXTURE_2D);
+        mYUVTextureId = GLES20.glGetUniformLocation(mShaderProgramId, "yuv_texture");
+        int[] textureNames = new int[1];
+        GLES20.glGenTextures(1, textureNames, 0);
+        int yuvTextureName = textureNames[0];
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, yuvTextureName);
+
+        mUniformWidthId = GLES20.glGetUniformLocation(mShaderProgramId, "screenWidth");
+
+        // Clear Background
+        GLES20.glClearColor(1.0f, 0.0f, 0.0f, 0.0f);
+
+        if (mSurfaceListener != null) {
+            mSurfaceListener.onGLSurfaceCreated();
+        }
     }
 
 
     private void initByteBuffers() {
 
-        final float[] positonVertices = {
+        final float[] positionVertices = {
                 -1.0f, 1.0f,    // Position 0
                 -1.0f, -1.0f,   // Position 1
                 1.0f, -1.0f,    // Position 2
                 1.0f, 1.0f,     // Position 3
         };
 
-        // TODO: I could potentially set this up to equal the frame size,
-        // IE: from 0-720 for height and 0-240 for width.  Then when I get
-        // a coordinate in the fragment shader if the coordinate mod 2 is
-        // zero its the first element, otherwise its the second element.
-        // This would eliminate the need
         final float[] textureVertices = {
                 0.0f, 0.0f,     // TexCoord 0
                 0.0f, 1.0f,     // TexCoord 1
@@ -152,9 +178,9 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
 
         final short[] indices = { 0, 1, 2, 0, 2, 3 };
 
-        mPosVertexBuf = ByteBuffer.allocateDirect(positonVertices.length * 4)
+        mPosVertexBuf = ByteBuffer.allocateDirect(positionVertices.length * 4)
                 .order(ByteOrder.nativeOrder()).asFloatBuffer();
-        mPosVertexBuf.put(positonVertices).position(0);
+        mPosVertexBuf.put(positionVertices).position(0);
 
         mTexVertexBuf = ByteBuffer.allocateDirect(textureVertices.length * 4)
                 .order(ByteOrder.nativeOrder()).asFloatBuffer();
@@ -164,23 +190,10 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
                 .order(ByteOrder.nativeOrder()).asShortBuffer();
         mIndicesBuf.put(indices).position(0);
 
-        int yuvBufSize = mParams.getFrameHeight() * mParams.getFrameWidth();
-
-        // Init YUV Index buffer.  If the byte is 0, the Y-Value is x.  If the
-        // byte is 1, the Y-Value is z.
-        mYUVindexBuf = ByteBuffer.allocate(yuvBufSize)
-                .order(ByteOrder.nativeOrder());
-        for (int i = 0; i < yuvBufSize; i++) {
-            mYUVindexBuf.put((byte)(i % 2));
-        }
-        mYUVindexBuf.position(0);
     }
 
     private void initShaderProgram() {
         // TODO: Load these from raw resources
-        // TODO: I can probably calculate the y-position in the
-        // vertex shader.  I'll try it after I see if the current
-        // attempt to render is successful
 
         //Our vertex shader code; nothing special
         String vertexShader =
@@ -201,18 +214,21 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
                 "#endif                                             \n" +
 
                 "varying vec2 v_texCoord;                           \n" +
-                "uniform sampler2D pos_texture;                     \n" +
                 "uniform sampler2D yuv_texture;                     \n" +
-
+                "uniform float screenWidth;                         \n"+
 
                 "void main (void){                                  \n" +
                 "   float r, g, b, y, u, v;                         \n" +
-                "   int pos;                                        \n"+
+                "   float screenPosX;                               \n"+
 
                 // Get determine whether the y-component is the first or second yuyv pixel
-                "   pos = texture2D(pos_texture, v_texCoord).x      \n"+
-                "   if (pos == 0) {                                 \n"+
-                "       y = texture2D(yuv_texture, v_texCoord).x    \n"+
+                // Normalize the screen x-coordinate to a range of [0,1]
+                "   screenPosX = gl_FragCoord.x / screenWidth;      \n"+
+
+                // If the screen X-Coordinate is less than the Texture Coordinate, use
+                // The first Y-Value.  Othwerise use the second.
+                "   if (screenPosX < v_texCoord.x) {                \n"+
+                "       y = texture2D(yuv_texture, v_texCoord).x;   \n"+
                 "   } else {                                        \n"+
                 "       y = texture2D(yuv_texture, v_texCoord).z;   \n"+
                 "   }                                               \n"+
@@ -240,7 +256,7 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
      * @param shaderString  The String containing the shader source code
      * @return              The shader Id, or 0 if failed
      */
-    public static int loadShader(int type, String shaderString) {
+    private static int loadShader(int type, String shaderString) {
         int shaderId;
         int[] compiled = new int[1];
 
@@ -269,7 +285,7 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
      * @param fragmentString    String containing the Fragment Program's source
      * @return  The Shader Program's Object ID
      */
-    public static int loadProgram(String vertexString, String fragmentString) {
+    private static int loadProgram(String vertexString, String fragmentString) {
         int vertexShaderId;
         int fragmentShaderId;
         int programId;
