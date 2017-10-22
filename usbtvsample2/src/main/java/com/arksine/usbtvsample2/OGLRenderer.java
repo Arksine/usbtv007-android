@@ -43,7 +43,7 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
     private FloatBuffer mTexVertexBuf;
     private FloatBuffer mPosVertexBuf;
     private ShortBuffer mIndicesBuf;
-    private float mScreenWidth;
+    private volatile float mScreenWidth;
 
     private int mShaderProgramId;
     private int mPositionAttr;
@@ -86,7 +86,8 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
         }
 
         if (frame == null) {
-            // TODO: render black frame?
+            //  render black frame?
+            GLES20.glClearColor(1.0f, 0.0f, 0.0f, 0.0f);
             return;
         }
 
@@ -194,6 +195,11 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
 
     private void initShaderProgram() {
         // TODO: Load these from raw resources
+        // TODO: Something isn't 100% correct with the shaders.  When display is begins, a
+        // strange swirling affect occurs.  It seems to correct itself after 10 seconds or so.
+        // I have a feeling it has something to do with how the y-coordinate is calculated.
+        //
+        // I don't believe it happens with renderscript, but I should test further
 
         //Our vertex shader code; nothing special
         String vertexShader =

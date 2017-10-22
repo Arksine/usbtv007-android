@@ -26,12 +26,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import timber.log.Timber;
 
 
-// TODO:10/10/2017 Delete all local Usb functionality (outside of permission and open).  Create
-// Native functions to communicate with JNI.  Use a handler with a seperate handler thread
-// to call all Native Functions, as some of them may block.  It also makes sure that
-// all calls happen from the same java thread, preventing any threading issues with the native code.
-// Allowing the threads to block in native code also allows me to return a value and execute
-// a Callback in the handler thread (such as onOpen, onConnected, onError, etc)
+// TODO: Note - Some older devices that are otg capable don't have the UsbHost API Enabled
+// It can be fixed with root access, Update Wiki for info on how to do it (dont forget when
+// changing the files that TABs should not be used, and the usbhost feature should
+// be added directly under the Permissions Tag
 
 
 /**
@@ -175,6 +173,9 @@ public class UsbTv {
     private static ArrayList<UsbTv> mReferenceList = new ArrayList<>();
 
     static {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR2) {
+            System.loadLibrary("gnustl_shared");
+        }
         System.loadLibrary("usbtv");
     }
 
@@ -252,7 +253,9 @@ public class UsbTv {
         UsbManager manager = (UsbManager) context.getSystemService(Context.USB_SERVICE);
         HashMap<String, UsbDevice> usbMap = manager.getDeviceList();
 
+        Timber.v("Checking for Usb Devices, Number reported: %s", usbMap.size());
         for (UsbDevice dev : usbMap.values()) {
+            Timber.v("Vendor Id: %#x\nProduct ID: %#x", dev.getVendorId(), dev.getProductId());
             if (dev.getVendorId() == 0x1b71 && dev.getProductId() == 0x3002) {
                 devList.add(dev);
             }
@@ -391,10 +394,12 @@ public class UsbTv {
     }
 
     public static void deviceDetached(UsbDevice device) {
+        Timber.v("USB Device Detached");
         //TODO:
     }
 
     public static void deviceAttached(UsbDevice device) {
+        Timber.v("USB Device Attached");
         //TODO:
     }
 
