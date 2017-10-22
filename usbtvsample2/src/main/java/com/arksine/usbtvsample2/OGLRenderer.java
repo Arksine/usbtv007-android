@@ -43,7 +43,7 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
     private FloatBuffer mTexVertexBuf;
     private FloatBuffer mPosVertexBuf;
     private ShortBuffer mIndicesBuf;
-    private volatile float mScreenWidth;
+    private volatile float mScreenWidthInv;
 
     private int mShaderProgramId;
     private int mPositionAttr;
@@ -55,7 +55,7 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
     public OGLRenderer(Context context, DeviceParams params) {
         mContext = context;
         mParams = params;
-        mScreenWidth = mParams.getFrameWidth();
+        mScreenWidthInv = 1 / mParams.getFrameWidth();
         mFrameQueue = new ArrayBlockingQueue<>(params.getFramePoolSize(), true);
         initByteBuffers();
     }
@@ -87,7 +87,7 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
 
         if (frame == null) {
             //  render black frame?
-            GLES20.glClearColor(1.0f, 0.0f, 0.0f, 0.0f);
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
             return;
         }
 
@@ -111,13 +111,13 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
         GLES20.glUniform1i(mYUVTextureId, 1);
         GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, frame.getWidth()/2,
                 frame.getHeight(), 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, frame.getFrameBuf());
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
         GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
         GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
 
         // Set up screen widht
-        GLES20.glUniform1f(mUniformWidthId, mScreenWidth);
+        GLES20.glUniform1f(mUniformWidthId, mScreenWidthInv);
 
         // Draw
         mIndicesBuf.position(0);
@@ -129,7 +129,7 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
     @Override
     public void onSurfaceChanged(GL10 gl, int width, int height) {
         // should make sure the viewport always fills the screen
-        mScreenWidth = (float) width;
+        mScreenWidthInv = 1 /(float) width;
         GLES20.glViewport(0, 0, width, height);
     }
 
@@ -153,7 +153,7 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
         mUniformWidthId = GLES20.glGetUniformLocation(mShaderProgramId, "screenWidth");
 
         // Clear Background
-        GLES20.glClearColor(1.0f, 0.0f, 0.0f, 0.0f);
+        GLES20.glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
 
         if (mSurfaceListener != null) {
             mSurfaceListener.onGLSurfaceCreated();
@@ -200,6 +200,9 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
         // I have a feeling it has something to do with how the y-coordinate is calculated.
         //
         // I don't believe it happens with renderscript, but I should test further
+        //
+        // Update: Most likely the screenXPos I calculate is VERY close to the texture coordinate.
+        // I'm probably going to need a mask to do this properly
 
         //Our vertex shader code; nothing special
         String vertexShader =
@@ -221,27 +224,32 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
 
                 "varying vec2 v_texCoord;                           \n" +
                 "uniform sampler2D yuv_texture;                     \n" +
+
+                // screen width is actually the inverse, so 1 / screenWidth
                 "uniform float screenWidth;                         \n"+
 
                 "void main (void){                                  \n" +
                 "   float r, g, b, y, u, v;                         \n" +
-                "   float screenPosX;                               \n"+
+                "   float screenPosX;                               \n" +
+
+                // Get the Pixel
+                "   vec4 yuvPixel = texture2D(yuv_texture, v_texCoord);  \n" +
 
                 // Get determine whether the y-component is the first or second yuyv pixel
                 // Normalize the screen x-coordinate to a range of [0,1]
-                "   screenPosX = gl_FragCoord.x / screenWidth;      \n"+
+                "   screenPosX = gl_FragCoord.x * screenWidth;      \n"+
 
                 // If the screen X-Coordinate is less than the Texture Coordinate, use
                 // The first Y-Value.  Othwerise use the second.
                 "   if (screenPosX < v_texCoord.x) {                \n"+
-                "       y = texture2D(yuv_texture, v_texCoord).x;   \n"+
+                "       y = yuvPixel.x;   \n"+
                 "   } else {                                        \n"+
-                "       y = texture2D(yuv_texture, v_texCoord).z;   \n"+
+                "       y = yuvPixel.z;   \n"+
                 "   }                                               \n"+
 
                 // U and V components are always the 2nd and 4th positions (not sure why subtracting .5)
-                "   u = texture2D(yuv_texture, v_texCoord).y - 0.5;  \n" +
-                "   v = texture2D(yuv_texture, v_texCoord).w - 0.5;  \n" +
+                "   u = yuvPixel.y - 0.5;  \n" +
+                "   v = yuvPixel.w - 0.5;  \n" +
 
 
                 //The numbers are just YUV to RGB conversion constants
