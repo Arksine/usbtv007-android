@@ -1,7 +1,6 @@
 package com.arksine.usbtvsample2;
 
 import android.annotation.SuppressLint;
-import android.graphics.PixelFormat;
 import android.hardware.usb.UsbDevice;
 import android.opengl.GLSurfaceView;
 import android.os.Bundle;
@@ -10,19 +9,14 @@ import android.support.v7.app.ActionBar;
 import android.support.v7.app.AppCompatActivity;
 import android.view.Gravity;
 import android.view.MotionEvent;
-import android.view.Surface;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
 import android.view.View;
 import android.widget.FrameLayout;
 
 import com.arksine.libusbtv.DeviceParams;
 import com.arksine.libusbtv.IUsbTvDriver;
 import com.arksine.libusbtv.UsbTv;
-import com.arksine.libusbtv.UsbTvFrame;
 
 import java.util.ArrayList;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import timber.log.Timber;
 
@@ -128,7 +122,7 @@ public class FullscreenActivity extends AppCompatActivity {
             synchronized (CAM_LOCK) {
                 mTestDriver = driver;
                 if (mTestDriver != null) {
-                    mTestDriver.setFrameCallback(mRenderer);
+                    mTestDriver.setOnFrameReceivedListener(mRenderer);
                     if (mSurfaceCreated && !mTestDriver.isStreaming()) {
                         mTestDriver.startStreaming();
                     }
@@ -178,7 +172,7 @@ public class FullscreenActivity extends AppCompatActivity {
             Create Usbtv Device Params to initialize device settings.
          */
         mUsbTvParams = new DeviceParams.Builder()
-                .setCallbacks(mCallbacks)
+                .setDriverCallbacks(mCallbacks)
                 .useLibraryReceiver(true)
                 .setInput(UsbTv.InputSelection.COMPOSITE)
                 .setScanType(UsbTv.ScanType.PROGRESSIVE)

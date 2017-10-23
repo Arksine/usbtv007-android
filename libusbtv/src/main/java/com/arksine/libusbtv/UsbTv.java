@@ -71,7 +71,7 @@ public class UsbTv {
         SET_SCANTYPE,
         SET_CONTROL,
         SET_SURFACE,
-        SET_CALLBACK;
+        SET_FRAME_LISTENER;
 
         private static final NativeAction[] ACTION_ARRAY = NativeAction.values();
 
@@ -476,8 +476,8 @@ public class UsbTv {
         }
 
         @Override
-        public void setFrameCallback(onFrameReceivedListener cb) {
-            Message msg = mNativeHander.obtainMessage(NativeAction.SET_CALLBACK.ordinal(), cb);
+        public void setOnFrameReceivedListener(onFrameReceivedListener cb) {
+            Message msg = mNativeHander.obtainMessage(NativeAction.SET_FRAME_LISTENER.ordinal(), cb);
             mNativeHander.sendMessage(msg);
         }
 
@@ -577,7 +577,7 @@ public class UsbTv {
                     Surface surface = (Surface)message.obj;
                     setSurface(surface);
                     break;
-                case SET_CALLBACK:
+                case SET_FRAME_LISTENER:
                     mOnFrameReceivedListener = (onFrameReceivedListener) message.obj;
                     boolean use = mOnFrameReceivedListener != null;
                     useCallback(use);

@@ -43,19 +43,18 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
     private FloatBuffer mTexVertexBuf;
     private FloatBuffer mPosVertexBuf;
     private ShortBuffer mIndicesBuf;
-    private volatile float mScreenWidthInv;
+    private ByteBuffer mYmaskBuf;
 
     private int mShaderProgramId;
     private int mPositionAttr;
     private int mTextureAttr;
     private int mYUVTextureId;
-    private int mUniformWidthId;
+    private int mYmaskId;
 
 
     public OGLRenderer(Context context, DeviceParams params) {
         mContext = context;
         mParams = params;
-        mScreenWidthInv = 1 / mParams.getFrameWidth();
         mFrameQueue = new ArrayBlockingQueue<>(params.getFramePoolSize(), true);
         initByteBuffers();
     }
@@ -92,6 +91,7 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
         }
 
         // Clear the color buffer
+        // TODO: Is this the cause of the initial swirl?
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
 
         // User Shader Program
@@ -106,7 +106,7 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
         GLES20.glEnableVertexAttribArray(mPositionAttr);
         GLES20.glEnableVertexAttribArray(mTextureAttr);
 
-        // Set up texture
+        // Set up YUV texture
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
         GLES20.glUniform1i(mYUVTextureId, 1);
         GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, frame.getWidth()/2,
@@ -116,8 +116,16 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
         GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
         GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
 
-        // Set up screen widht
-        GLES20.glUniform1f(mUniformWidthId, mScreenWidthInv);
+        // Set up Y-Mask Texture
+        mYmaskBuf.position(0);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE2);
+        GLES20.glUniform1i(mYmaskId, 2);
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE, frame.getWidth(),
+                frame.getHeight(), 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, mYmaskBuf);
+        GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
 
         // Draw
         mIndicesBuf.position(0);
@@ -129,7 +137,6 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
     @Override
     public void onSurfaceChanged(GL10 gl, int width, int height) {
         // should make sure the viewport always fills the screen
-        mScreenWidthInv = 1 /(float) width;
         GLES20.glViewport(0, 0, width, height);
     }
 
@@ -142,6 +149,7 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
         mPositionAttr = GLES20.glGetAttribLocation(mShaderProgramId, "a_position");
         mTextureAttr = GLES20.glGetAttribLocation(mShaderProgramId, "a_texCoord");
 
+        // Set up the yuv texture
         GLES20.glEnable(GLES20.GL_TEXTURE_2D);
         mYUVTextureId = GLES20.glGetUniformLocation(mShaderProgramId, "yuv_texture");
         int[] textureNames = new int[1];
@@ -150,7 +158,14 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, yuvTextureName);
 
-        mUniformWidthId = GLES20.glGetUniformLocation(mShaderProgramId, "screenWidth");
+        // Set up the y-mask texture
+        GLES20.glEnable(GLES20.GL_TEXTURE_2D);
+        mYmaskId = GLES20.glGetUniformLocation(mShaderProgramId, "y_mask");
+        int[] maskTexNames = new int[1];
+        GLES20.glGenTextures(1, maskTexNames, 0);
+        int maskTexName = maskTexNames[0];
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE2);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, maskTexName);
 
         // Clear Background
         GLES20.glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
@@ -191,18 +206,23 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
                 .order(ByteOrder.nativeOrder()).asShortBuffer();
         mIndicesBuf.put(indices).position(0);
 
+        int yuvBufSize = mParams.getFrameHeight() * mParams.getFrameWidth();
+
+        // Init YUV Index buffer.  If the byte is 0, the Y-Value is x.  If the
+        // byte is 2, the Y-Value is z.
+        mYmaskBuf = ByteBuffer.allocate(yuvBufSize)
+                .order(ByteOrder.nativeOrder());
+        for (int i = 0; i < yuvBufSize; i++) {
+            mYmaskBuf.put((byte)((i % 2) * 2));
+        }
+        mYmaskBuf.position(0);
+
     }
 
     private void initShaderProgram() {
         // TODO: Load these from raw resources
-        // TODO: Something isn't 100% correct with the shaders.  When display is begins, a
-        // strange swirling affect occurs.  It seems to correct itself after 10 seconds or so.
-        // I have a feeling it has something to do with how the y-coordinate is calculated.
-        //
-        // I don't believe it happens with renderscript, but I should test further
-        //
-        // Update: Most likely the screenXPos I calculate is VERY close to the texture coordinate.
-        // I'm probably going to need a mask to do this properly
+        // TODO: I have added a mask to the shader (I'm not sure the outcome has changed).
+        // The swirling affect still takes place.  Could it be the renderer, or the render code itself?
 
         //Our vertex shader code; nothing special
         String vertexShader =
@@ -224,32 +244,29 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
 
                 "varying vec2 v_texCoord;                           \n" +
                 "uniform sampler2D yuv_texture;                     \n" +
-
-                // screen width is actually the inverse, so 1 / screenWidth
-                "uniform float screenWidth;                         \n"+
+                "uniform sampler2D y_mask;                     \n" +
 
                 "void main (void){                                  \n" +
                 "   float r, g, b, y, u, v;                         \n" +
-                "   float screenPosX;                               \n" +
+                "   float yPosition;                                \n" +
+                "   vec4 yuvPixel;                                  \n"+
 
-                // Get the Pixel
-                "   vec4 yuvPixel = texture2D(yuv_texture, v_texCoord);  \n" +
+                // Get the Pixel and Y-Value mask
+                "   yuvPixel = texture2D(yuv_texture, v_texCoord);  \n" +
+                "   yPosition = texture2D(y_mask, v_texCoord).x;    \n"+
 
-                // Get determine whether the y-component is the first or second yuyv pixel
-                // Normalize the screen x-coordinate to a range of [0,1]
-                "   screenPosX = gl_FragCoord.x * screenWidth;      \n"+
 
-                // If the screen X-Coordinate is less than the Texture Coordinate, use
-                // The first Y-Value.  Othwerise use the second.
-                "   if (screenPosX < v_texCoord.x) {                \n"+
-                "       y = yuvPixel.x;   \n"+
+                // If the mask is zero (or thereabout), use the 1st y-value.
+                // Otherwise use the 2nd.
+                "   if (yPosition < 1.0f) {                            \n"+
+                "       y = yuvPixel.x;                             \n"+
                 "   } else {                                        \n"+
-                "       y = yuvPixel.z;   \n"+
+                "       y = yuvPixel.z;                             \n"+
                 "   }                                               \n"+
 
                 // U and V components are always the 2nd and 4th positions (not sure why subtracting .5)
-                "   u = yuvPixel.y - 0.5;  \n" +
-                "   v = yuvPixel.w - 0.5;  \n" +
+                "   u = yuvPixel.y - 0.5;                           \n" +
+                "   v = yuvPixel.w - 0.5;                           \n" +
 
 
                 //The numbers are just YUV to RGB conversion constants

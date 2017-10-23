@@ -136,7 +136,7 @@ public class FullscreenActivity extends AppCompatActivity {
             synchronized (CAM_LOCK) {
                 mTestDriver = driver;
                 if (mTestDriver != null) {
-                    mTestDriver.setFrameCallback(mOnFrameReceivedListener);
+                    mTestDriver.setOnFrameReceivedListener(mOnFrameReceivedListener);
 
                     // If I have a preview surface, we can fetch the renderer and start it
                     if (mPreviewSurface != null) {
@@ -202,7 +202,7 @@ public class FullscreenActivity extends AppCompatActivity {
             Create Usbtv Device Params to initialize device settings.
          */
         DeviceParams params = new DeviceParams.Builder()
-                .setCallbacks(mCallbacks)
+                .setDriverCallbacks(mCallbacks)
                 .useLibraryReceiver(true)
                 .setInput(UsbTv.InputSelection.COMPOSITE)
                 .setScanType(UsbTv.ScanType.PROGRESSIVE)

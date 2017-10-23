@@ -96,7 +96,7 @@ public class DeviceParams {
             input = params.mInput;
         }
 
-        public Builder setCallbacks(@NonNull UsbTv.DriverCallbacks cbs) {
+        public Builder setDriverCallbacks(@NonNull UsbTv.DriverCallbacks cbs) {
             callbacks = cbs;
             return this;
         }
