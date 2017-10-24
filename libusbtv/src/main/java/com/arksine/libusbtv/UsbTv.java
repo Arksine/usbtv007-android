@@ -39,6 +39,9 @@ import timber.log.Timber;
 public class UsbTv {
     public static final boolean DEBUG = true;  // TODO: set to false for release
 
+    // TODO: Receiver leaks if an attempt to open is made, but permission is not granted.
+    // Need a better way of handling the BR.  Do it though static functions?
+
     public interface DriverCallbacks {
         void onOpen(IUsbTvDriver driver, boolean status);
         void onClose();
@@ -407,6 +410,7 @@ public class UsbTv {
     public void nativeFrameCallback(int poolIndex, int frameId) {
         if (mOnFrameReceivedListener != null) {
             mLocalPool[poolIndex].setFrameId(frameId);
+            mLocalPool[poolIndex].unlock();
             mOnFrameReceivedListener.onFrameReceived(mLocalPool[poolIndex]);
         }
     }

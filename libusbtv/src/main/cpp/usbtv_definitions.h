@@ -10,7 +10,7 @@
 #include <asm/byteorder.h>
 
 //#define DEBUG_PACKET
-#define PROFILE_PACKET
+#define PROFILE_VIDEO_URB
 #define PROFILE_FRAME
 
 
@@ -49,6 +49,8 @@
 
 // TODO: add colorspace and scantype so that receiving functions know how to process it. Also
 // add TvNorm and a Flag for Frame Status (complete, incomplete, other possible statuses)
+
+// TODO: I need another atomic flag, or atomic counter?
 struct UsbTvFrame {
 	void*       buffer;
 	uint8_t     poolIndex;
@@ -59,7 +61,7 @@ struct UsbTvFrame {
 	uint32_t    flags;
 	jobject     byteBuffer;     // This is a reference to a bytebuffer that will be sent to java via cb
 
-	std::atomic_flag lock = ATOMIC_FLAG_INIT;
+	std::atomic_uint_fast8_t lock = ATOMIC_VAR_INIT(0);
 };
 
 enum struct TvInput {

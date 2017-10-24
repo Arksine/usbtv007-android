@@ -4,7 +4,7 @@
 
 #include "UsbTvDriver.h"
 
-#if defined(PROFILE_FRAME) || defined(PROFILE_PACKET)
+#if defined(PROFILE_FRAME) || defined(PROFILE_VIDEO_URB)
 #include <chrono>
 #endif
 
@@ -22,8 +22,6 @@ UsbTvDriver::UsbTvDriver(JNIEnv *env, jobject utvObj, JavaCallback* cb, int fd,
 	}
 
 	_env = env;
-	_renderSurface = nullptr;
-	_shouldRender = false;
 	_streamActive = false;
 	_framePool = nullptr;
 	_framePoolSize = (uint16_t)framePoolSize;
@@ -44,6 +42,7 @@ UsbTvDriver::UsbTvDriver(JNIEnv *env, jobject utvObj, JavaCallback* cb, int fd,
 	_numIsoPackets = USBTV_ISOC_PACKETS_PER_REQUEST;
 	_maxIsoPacketSize = (uint32_t)maxIsoPacketSize;
 	_currentFrameId = 0;
+	_lastOdd = true;
 	_secondFrame = false;
 	_packetsDone = 0;
 	_packetsPerField = 0;
@@ -57,14 +56,15 @@ UsbTvDriver::UsbTvDriver(JNIEnv *env, jobject utvObj, JavaCallback* cb, int fd,
 	_processThreadRunning = false;
 	_frameProcessContext = new Driver::ThreadContext;
 	_frameProcessContext->usbtv = this;
-	_frameProcessContext->shouldRender = &_shouldRender;
 	_frameProcessContext->useCallback = &_useCallback;
+	_frameProcessContext->renderer = &_glRenderer;
 	_frameProcessContext->threadRunning = &_processThreadRunning;
 	_frameProcessContext->callback = cb;
 
+#if defined(PROFILE_FRAME)
+	_framePoolSpins = 0;
+#endif
 	// TODO: Initialize Audio Vars
-
-	// TODO: Initialize Frame Renderer when implemented
 
 	_initalized = true;
 }
@@ -77,7 +77,7 @@ UsbTvDriver::~UsbTvDriver() {
 		}
 
 		LOGD("Streaming stopped");
-		// TODO: Delete any dynamic Audio Vars and Frame Renderer if necessary
+		// TODO: Delete any dynamic Audio Vars if necessary
 
 		_env->DeleteGlobalRef(_usbtvObj);
 		delete _frameProcessContext;
@@ -205,7 +205,7 @@ void UsbTvDriver::stopStreaming() {
 
 		// TODO: Stop Audio
 
-		// TODO: stop rendering after it is implemented
+		_glRenderer.signalStop();       // Stop Rendering
 
 		// Stop Iso requests
 		if (_usbConnection->isIsoThreadRunning()) {
@@ -235,13 +235,13 @@ void UsbTvDriver::stopStreaming() {
 		UsbTvFrame* frame;
 		while(_frameProcessQueue.try_dequeue(frame)) {
 			if (frame != nullptr) {
-				frame->lock.clear(std::memory_order_release);
+				frame->lock = 0;
 			}
 		}
 
 		// Clear lock for frame that usb was reading into;
 		if (_usbInputFrame != nullptr) {
-			_usbInputFrame->lock.clear(std::memory_order_release);
+			_usbInputFrame->lock = 0;
 			_usbInputFrame = nullptr;
 		}
 
@@ -249,6 +249,9 @@ void UsbTvDriver::stopStreaming() {
 
 		LOGD("Dropped Frames: %d", _droppedFrameCounter);
 		LOGD("Incomplete Frames: %d", _incompleteFrameCounter);
+#if defined(PROFILE_FRAME)
+		LOGD("Frame Pool Spins: %ld", _framePoolSpins);
+#endif
 	}
 }
 
@@ -349,11 +352,8 @@ int UsbTvDriver::getControl(int control) {
  *
  * @param surface The Android surface object to render to
  */
-void UsbTvDriver::setSurface(jobject surface) {
-	_shouldRender = surface != nullptr;
-	// TODO: If rendering stop rendering if surface is null
-	_renderSurface = surface;
-	// TODO: set surface for framerender (I probably don't even need to track it in a var here)
+void UsbTvDriver::setRenderWindow(ANativeWindow* window) {
+	_glRenderer.setRenderWindow(window);
 }
 
 /**
@@ -375,12 +375,18 @@ UsbTvFrame* UsbTvDriver::getFrame() {
  * @return  True if successful, otherwise false
  */
 bool UsbTvDriver::clearFrameLock(int framePoolIndex) {
-	if (_framePool != nullptr && framePoolIndex >= 0 && framePoolIndex < _framePoolSize) {
-		_framePool[framePoolIndex]->lock.clear(std::memory_order_release);
-		return true;
+	bool success = true;
+	_framePoolMutex.lock();
+	if (_framePool != nullptr) {
+		// the Pool Index is strictly controlled, so it shouldn't be possible to get a
+		// frame index outside of the array bounds
+
+		_framePool[framePoolIndex]->lock--; // Decrement pool lock counter
 	} else {
-		return false;
+		success = false;
 	}
+	_framePoolMutex.unlock();
+	return success;
 }
 
 /**
@@ -411,6 +417,7 @@ bool UsbTvDriver::setRegisters(const uint16_t regs[][2] , int size ) {
  * Allocates a pool of UsbTvFrame objects and their buffers
  */
 void UsbTvDriver::allocateFramePool() {
+	_framePoolMutex.lock();
 	if (_framePool == nullptr) {
 		_framePool = new UsbTvFrame*[_framePoolSize];
 		uint32_t bufferheight = (_scanType == ScanType::INTERLEAVED) ? _frameHeight :
@@ -432,7 +439,7 @@ void UsbTvDriver::allocateFramePool() {
 			_framePool[i]->width = _frameWidth;
 			_framePool[i]->height = (uint16_t) bufferheight;
 			_framePool[i]->flags = 0;
-			_framePool[i]->lock.clear(std::memory_order_release);
+			_framePool[i]->lock = 0;
 
 			// Create a DirectByteBuffer around the frame's buffer, then notify JVM so
 			// it can create a matching pool with references to the buffers
@@ -444,15 +451,17 @@ void UsbTvDriver::allocateFramePool() {
 
 		_env->DeleteLocalRef(cls);
 	}
+	_framePoolMutex.unlock();
 }
 
 /**
  * Frees UsbTvFrame objects from the heap, as well as their associated buffers.
  */
 void UsbTvDriver::freeFramePool() {
+	_framePoolMutex.lock();
 	if (_framePool!= nullptr && !_streamActive) {
 		for (int i = 0; i < _framePoolSize; i++) {
-			if (_framePool[i]->lock.test_and_set(std::memory_order_acquire)) {
+			if (_framePool[i]->lock != 0) {
 				LOGD("frame index %d still has a lock when attempting to free", i);
 			}
 			_env->DeleteGlobalRef(_framePool[i]->byteBuffer);
@@ -462,6 +471,7 @@ void UsbTvDriver::freeFramePool() {
 		delete [] _framePool;
 		_framePool = nullptr;
 	}
+	_framePoolMutex.unlock();
 }
 
 /**
@@ -473,24 +483,27 @@ void UsbTvDriver::freeFramePool() {
 UsbTvFrame* UsbTvDriver::fetchFrameFromPool() {
 	UsbTvFrame* frame;
 	uint8_t index = 0;
-	bool expected = false;
 
 	// Loop until an unlocked frame is found.
 	while(true) {
 		frame = _framePool[index];
 
-		// Test lock for current frame.  When a frame is found with a cleared lock,
-		// the lock flag will be set and the frame will be returned
-		if (!frame->lock.test_and_set(std::memory_order_acquire)) {
+		// Test lock for current frame.  A frame is unlocked when the counter reaches 0.
+		// The counter is incremented for each reference to a frame (at this point there is
+		// a maximum of two)
+		if (frame->lock == 0) {
+			frame->lock++;
 			frame->flags = FRAME_START;
 			return frame;
 		}
 
 		index++;
-		expected = false;
 
 		if (index >= _framePoolSize) {
 			index = 0;
+#if defined(PROFILE_FRAME)
+			_framePoolSpins++;
+#endif
 		}
 	}
 }
@@ -505,6 +518,7 @@ void UsbTvDriver::onUrbReceived(usbdevfs_urb *urb) {
 	uint8_t* buffer = (uint8_t*)urb->buffer;
 	unsigned int packetLength;
 	unsigned int packetOffset = 0;
+
 	for (int i = 0; i < urb->number_of_packets; i++) {
 		packetLength = urb->iso_frame_desc[i].actual_length;
 		buffer += packetOffset;
@@ -512,12 +526,10 @@ void UsbTvDriver::onUrbReceived(usbdevfs_urb *urb) {
 			int count = packetLength / USBTV_PACKET_SIZE;
 			for (int j = 0; j < count; j++) {
 				uint8_t* packet = buffer + (j * USBTV_PACKET_SIZE);
-				// TODO: Profile the time it takes to process a packet (in microseconds)
 				processPacket((__be32*) packet);
 			}
 		}
 		packetOffset = urb->iso_frame_desc[i].length;
-
 	}
 }
 
@@ -582,6 +594,7 @@ void UsbTvDriver::processPacket(__be32 *packet) {
 				LOGD("Incomplete Frame Dropped, ID: %d", _currentFrameId);
 				_droppedFrameCounter++;
 			}
+			_lastOdd = isOdd;
 			_currentFrameId = frameId;
 			_packetsDone = 0;
 			_usbInputFrame->flags = FRAME_IN_PROGRESS;
@@ -604,8 +617,8 @@ void UsbTvDriver::processPacket(__be32 *packet) {
 		_packetsDone++;
 
 		// TODO: instead of checking a Finished Frame when packetNumber == 359, I could
-		// do it when a new Id is received.  Problem is then I don't know if the current
-		// frame is odd or not
+		// do it when a new Id is received.  Use _lastOdd to determine if the
+		// frame was odd or not
 		// Packet Finished
 		if (packetNumber == (uint32_t)(_packetsPerField - 1)) {
 			checkFinishedFrame(isOdd);
@@ -738,6 +751,7 @@ void frame_process_thread(Driver::ThreadContext* ctx) {
 		return;
 	}
 
+	ctx->renderer->threadStartCheck();
 	ctx->callback->attachThread();
 
 	UsbTvFrame* frame;
@@ -759,12 +773,13 @@ void frame_process_thread(Driver::ThreadContext* ctx) {
 		}
 
 		if (*(ctx->useCallback)) {
+			frame->lock++;      // this is a second reference, add a counter to the lock
 			ctx->callback->invoke(frame);
 		}
 
-		if (*(ctx->shouldRender)) {
-			// TODO: call render frame
-		}
+		// Render a frame.  If the render window is not set, the frame's lock will
+		// simply be decremented.
+		ctx->renderer->renderFrame(frame);
 
 
 #if defined(PROFILE_FRAME)
@@ -787,7 +802,11 @@ void frame_process_thread(Driver::ThreadContext* ctx) {
 
 	}
 
+	// TODO: Must call destroy on the renderer here.  The EGL context requires that
+	// everything be done on the same thread
+
 	ctx->callback->detachThread();
+	ctx->renderer->threadEndCheck();
 
 	return;
 }

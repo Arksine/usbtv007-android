@@ -1,6 +1,7 @@
 package com.arksine.libusbtv;
 
 import java.nio.ByteBuffer;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import timber.log.Timber;
 
@@ -11,8 +12,9 @@ import timber.log.Timber;
 
 public class UsbTvFrame {
 
-    private final ByteBuffer mFrameBuf;
+    private AtomicBoolean mLocked = new AtomicBoolean(false);
     private int mFrameId;
+    private final ByteBuffer mFrameBuf;
     private final int mPoolIndex;
     private final DeviceParams mParams;
 
@@ -21,6 +23,14 @@ public class UsbTvFrame {
         mParams = params;
         mPoolIndex = poolIndex;
         mFrameId = -1;
+    }
+
+    /**
+     * A lock prevents a frame from being returned to the native frame pool.  This
+     * unlocks the frame, allo
+     */
+    void unlock() {
+        mLocked.set(false);
     }
 
     public ByteBuffer getFrameBuf() {
@@ -75,6 +85,7 @@ public class UsbTvFrame {
 
         UsbTvFrame frame = new UsbTvFrame(mParams, clone, -1);
         frame.mFrameId = mFrameId;
+        frame.mLocked.set(true);
         return frame;
     }
 
@@ -83,8 +94,12 @@ public class UsbTvFrame {
      */
     public void returnFrame() {
         mFrameBuf.rewind();
-        if (!returnFrameToPool(mPoolIndex)) {
-            Timber.d("Error returning frame to pool");
+
+        // Lock the frame after a return, so it cannot be returned twice
+        if (mLocked.compareAndSet(false, true)) {
+            if (!returnFrameToPool(mPoolIndex)) {
+                Timber.d("Error returning frame to pool");
+            }
         }
     }
 

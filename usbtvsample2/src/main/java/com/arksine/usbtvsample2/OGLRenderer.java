@@ -182,7 +182,7 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
                 -1.0f, 1.0f,    // Position 0
                 -1.0f, -1.0f,   // Position 1
                 1.0f, -1.0f,    // Position 2
-                1.0f, 1.0f,     // Position 3
+                1.0f, 1.0f      // Position 3
         };
 
         final float[] textureVertices = {

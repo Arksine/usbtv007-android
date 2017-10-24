@@ -475,6 +475,7 @@ void iso_read_thread(UsbDevice::ThreadContext* ctx) {
 		switch (ret) {
 			case 0:
 				if (urb->usercontext == ctx->parent) {
+					// TODO: Profile URB execution time
 					// Got a valid urb that was submitted from this context
 					ctx->callback(urb);
 				}
@@ -497,6 +498,7 @@ void iso_read_thread(UsbDevice::ThreadContext* ctx) {
 
 		// resubmit if this is one of our urbs
 		if (urb != nullptr && urb->usercontext == ctx->parent) {
+
 			ctx->parent->resubmitIsoUrb(urb);
 		}
 

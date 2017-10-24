@@ -3,8 +3,10 @@
 //
 
 #include <cstdlib>
+#include <android/native_window_jni.h>
 #include "usbtv.h"
 #include "UsbTvDriver.h"
+
 
 // Global vars necessary for tracking
 UsbTvDriver* usbtv = nullptr;
@@ -88,7 +90,13 @@ JNIEXPORT void JNICALL Java_com_arksine_libusbtv_UsbTv_setSurface(JNIEnv* jenv,
                                                                   jobject thisObj,
                                                                   jobject surface) {
 	if (usbtv != nullptr) {
-		usbtv->setSurface(surface);
+		if (surface != nullptr) {
+			ANativeWindow* window = ANativeWindow_fromSurface(jenv, surface);
+			usbtv->setRenderWindow(window);
+		} else {
+			usbtv->setRenderWindow(nullptr);
+		}
+
 	}
 }
 

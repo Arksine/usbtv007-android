@@ -11,6 +11,8 @@ LOCAL_ARM_MODE := arm
 
 LOCAL_LDLIBS := -llog \
 				-landroid \
+				-lGLESv2  \
+				-lEGL     \
 				-latomic
 
 # TODO: Add JNI Renderscript compat if necessary

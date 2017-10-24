@@ -6,8 +6,10 @@
 #define USBTV007_ANDROID_USBTVDRIVER_H
 
 #include <thread>
+#include <android/native_window.h>
 #include "usbtv_definitions.h"
 #include "AndroidUsbDevice.h"
+#include "FrameRenderer.h"
 #include "JavaCallback.h"
 #include "ConcurrentQueue/blockingconcurrentqueue.h"
 
@@ -17,8 +19,8 @@ namespace Driver {
 	struct ThreadContext {
 		UsbTvDriver*    usbtv;
 		JavaCallback*   callback;
+		FrameRenderer*  renderer;
 		bool*           useCallback;
-		bool*           shouldRender;
 		bool*           threadRunning;
 	};
 }
@@ -35,13 +37,12 @@ private:
 	TvNorm      _tvNorm;
 	ScanType    _scanType;
 
-	uint16_t     _framePoolSize;
-	UsbTvFrame** _framePool;
+	uint16_t        _framePoolSize;
+	UsbTvFrame**    _framePool;
+	std::mutex      _framePoolMutex;
 
 	AndroidUsbDevice*   _usbConnection;
 	bool                _useCallback;
-	bool                _shouldRender;
-	jobject             _renderSurface;
 
 	bool _streamActive;
 
@@ -58,6 +59,7 @@ private:
 	uint32_t    _currentFrameId;
 	uint16_t    _packetsPerField;
 	uint16_t    _packetsDone;
+	bool        _lastOdd;
 	bool        _secondFrame;
 
 	// Frame Process variables
@@ -67,8 +69,14 @@ private:
 
 	moodycamel::BlockingConcurrentQueue<UsbTvFrame*>    _frameProcessQueue;
 
+	FrameRenderer _glRenderer;
+
 	uint32_t    _droppedFrameCounter;
 	uint32_t    _incompleteFrameCounter;
+
+#if defined(PROFILE_FRAME)
+	long _framePoolSpins;
+#endif
 
 	/* TODO: Audio Members */
 
@@ -96,7 +104,7 @@ public:
 
 
 	void setCallback(bool shouldUse) {_useCallback = shouldUse;}
-	void setSurface(jobject surface);
+	void setRenderWindow(ANativeWindow* window);
 
 	UsbTvFrame* getFrame();
 	bool clearFrameLock(int framePoolIndex);
