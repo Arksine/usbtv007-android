@@ -20,14 +20,12 @@ private:
 	enum class Status {
 		STATUS_OFF,
 		STATUS_UPDATE_WINDOW,
-		STATUS_INIT_GL,
 		STATUS_STOP,
 		STATUS_STREAMING
 	};
 
 	Status      _currentStatus;
 	std::mutex  _renderMutex;
-	bool        _glInitialized;
 
 	ANativeWindow*  _renderWindow;
 	EGLDisplay      _renderDisplay;
@@ -49,14 +47,14 @@ private:
 	// TODO: need integers for all the opengl IDs that are generate
 
 
-	bool initializeGL(UsbTvFrame* frame);
+	bool initializeGL();
 	bool initDisplay();
 	void destroy();
 
 
-	static GLuint loadShaderProgram(const GLchar * const *vertexString,
-	                                const GLchar * const *fragmentString);
-	static GLuint loadShader(GLenum type, const GLchar * const *shaderString);
+	static GLuint loadShaderProgram(const GLchar* vertexString,
+	                                const GLchar* fragmentString);
+	static GLuint loadShader(GLenum type, const GLchar* shaderString);
 public:
 	FrameRenderer();
 	~FrameRenderer();
@@ -67,6 +65,8 @@ public:
 
 	void threadStartCheck();
 	void threadEndCheck();
+
+	void initYmask(uint16_t frameWidth, uint16_t frameHeight);
 };
 
 

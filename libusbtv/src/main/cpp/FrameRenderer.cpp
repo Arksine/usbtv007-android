@@ -7,7 +7,14 @@
 #include "android/native_window.h"
 #include <cstdlib>
 
-#define NUMBER_OF_LINES(str_array) (sizeof(str_array) / sizeof(const GLchar*))
+// TODO: When the surface changes rather than is created or destroyed, I should simply
+// pass the new width and height rather than create a new window.  I can change
+// the viewport.
+
+// TODO: Manage and start a thread owned by the Frame renderer.  I can use a blocking queue
+// for this, but in the future I'll just poll the TVDriver.
+
+// TODO: The application should communicate directly with the renderer
 
 static GLfloat positionVertices[] = {
 		-1.0f, 1.0f,    // Position 0
@@ -26,64 +33,63 @@ static GLfloat textureVertices[] = {
 static GLushort indices[] = {0, 1, 2, 0, 2, 3};
 
 //Our vertex shader code; nothing special
-static const GLchar* vertexShaderString[] = {
-	"attribute vec4 a_position;                         \n",
-	"attribute vec2 a_texCoord;                         \n",
-	"varying vec2 v_texCoord;                           \n",
+static const GLchar* vertexShaderString =
+	"attribute vec4 a_position;                         \n"
+	"attribute vec2 a_texCoord;                         \n"
+	"varying vec2 v_texCoord;                           \n"
 
-	"void main(){                                       \n",
-	"   gl_Position = a_position;                       \n",
-	"   v_texCoord = a_texCoord;                        \n",
-	"}                                                  \n"
-};
+	"void main(){                                       \n"
+	"   gl_Position = a_position;                       \n"
+	"   v_texCoord = a_texCoord;                        \n"
+	"}";
+
 
 //Our fragment shader code; takes Y,U,V values for each pixel and calculates R,G,B colors,
 //Effectively making YUV to RGB conversion
-static const GLchar* fragmentShaderString[] = {
-		"#ifdef GL_ES                                       \n",
-		"precision highp float;                             \n",
-		"#endif                                             \n",
+static const GLchar* fragmentShaderString =
+		"#ifdef GL_ES                                       \n"
+		"precision highp float;                             \n"
+		"#endif                                             \n"
 
-		"varying vec2 v_texCoord;                           \n",
-		"uniform sampler2D yuv_texture;                     \n",
-		"uniform sampler2D y_mask;                          \n",
+		"varying vec2 v_texCoord;                           \n"
+		"uniform sampler2D yuv_texture;                     \n"
+		"uniform sampler2D y_mask;                          \n"
 
-		"void main (void){                                  \n",
-		"   float r, g, b, y, u, v;                         \n",
-		"   float yPosition;                                \n",
-		"   vec4 yuvPixel;                                  \n",
+		"void main (void){                                  \n"
+		"   float r, g, b, y, u, v;                         \n"
+		"   float yPosition;                                \n"
+		"   vec4 yuvPixel;                                  \n"
 
 		// Get the Pixel and Y-Value mask
-		"   yuvPixel = texture2D(yuv_texture, v_texCoord);  \n",
-		"   yPosition = texture2D(y_mask, v_texCoord).x;    \n",
+		"   yuvPixel = texture2D(yuv_texture, v_texCoord);  \n"
+		"   yPosition = texture2D(y_mask, v_texCoord).x;    \n"
 
 
 		// If the mask is zero (or thereabout), use the 1st y-value.
 		// Otherwise use the 2nd.
-		"   if (yPosition < 1.0f) {                         \n",
-		"       y = yuvPixel.x;                             \n",
-		"   } else {                                        \n",
-		"       y = yuvPixel.z;                             \n",
-		"   }                                               \n",
+		"   if (yPosition < 1.0f) {                         \n"
+		"       y = yuvPixel.x;                             \n"
+		"   } else {                                        \n"
+		"       y = yuvPixel.z;                             \n"
+		"   }                                               \n"
 
 		// U and V components are always the 2nd and 4th positions (not sure why subtracting .5)
-		"   u = yuvPixel.y - 0.5;                           \n",
-		"   v = yuvPixel.w - 0.5;                           \n",
+		"   u = yuvPixel.y - 0.5;                           \n"
+		"   v = yuvPixel.w - 0.5;                           \n"
 
 
 		//The numbers are just YUV to RGB conversion constants
-		"   r = y + 1.13983*v;                              \n",
-		"   g = y - 0.39465*u - 0.58060*v;                  \n",
-		"   b = y + 2.03211*u;                              \n",
+		"   r = y + 1.13983*v;                              \n"
+		"   g = y - 0.39465*u - 0.58060*v;                  \n"
+		"   b = y + 2.03211*u;                              \n"
 
 		//We finally set the RGB color of our pixel
-		"   gl_FragColor = vec4(r, g, b, 1.0);              \n",
-		"}                                                  \n"
-};
+		"   gl_FragColor = vec4(r, g, b, 1.0);              \n"
+		"}";
+
 
 FrameRenderer::FrameRenderer() {
 	_currentStatus = Status::STATUS_OFF;
-	_glInitialized = false;
 
 	_posVertexBuffer = positionVertices;
 	_texVertexBuffer = textureVertices;
@@ -133,7 +139,7 @@ void FrameRenderer::threadStartCheck() {
  */
 void FrameRenderer::threadEndCheck() {
 	_renderMutex.lock();
-	if (_renderDisplay != EGL_NO_DISPLAY || _glInitialized) {
+	if (_renderDisplay != EGL_NO_DISPLAY) {
 		LOGI("Renderer was not shut down via stop signal, threadEndCheck() will destroy egl context");
 		destroy();
 	}
@@ -168,6 +174,25 @@ void FrameRenderer::setRenderWindow(ANativeWindow *win) {
 	_renderMutex.unlock();
 }
 
+void FrameRenderer::initYmask(uint16_t frameWidth, uint16_t frameHeight) {
+	_renderMutex.lock();
+	if (_yMaskBuffer != nullptr) {
+		free(_yMaskBuffer);
+		_yMaskBuffer = nullptr;
+	}
+
+	// Set up the Y-value mask.  Even values are 0, odd values are 2.  This allows the
+	// shader to determine which Y-Value to use when fetching a texel that contains a YUYV
+	// format vector.
+	size_t bufferSize = frameWidth*frameHeight;
+	_yMaskBuffer = (uint8_t*)malloc(bufferSize);
+
+	for (int i = 0; i < bufferSize; i++) {
+		_yMaskBuffer[i] = (uint8_t)((i % 2)*2);
+	}
+	_renderMutex.unlock();
+}
+
 bool FrameRenderer::initDisplay() {
 	const EGLint attribs[] = {
 			EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
@@ -176,12 +201,14 @@ bool FrameRenderer::initDisplay() {
 			EGL_RED_SIZE, 8,
 			EGL_NONE
 	};
-	EGLDisplay display;
+	const EGLint contextAttrib[] = {
+		EGL_CONTEXT_CLIENT_VERSION, 2,
+	    EGL_NONE
+	};
+
 	EGLConfig config;
 	EGLint numConfigs;
 	EGLint format;
-	EGLSurface surface;
-	EGLContext context;
 	EGLint width;
 	EGLint height;
 
@@ -192,24 +219,25 @@ bool FrameRenderer::initDisplay() {
 
 	LOGI("Initializing EGL Context");
 
-	display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-	if (display == EGL_NO_DISPLAY) {
+	_renderDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+	if (_renderDisplay == EGL_NO_DISPLAY) {
 		LOGE("eglGetDisplay() returned error: %d", eglGetError());
 		return false;
 	}
 
-	if (!eglInitialize(display, 0, 0)) {
+	if (!eglInitialize(_renderDisplay, 0, 0)) {
 		LOGE("eglInitialize() returned error: %d", eglGetError());
+		destroy();
 		return false;
 	}
 
-	if (!eglChooseConfig(display, attribs, &config, 1, &numConfigs)) {
+	if (!eglChooseConfig(_renderDisplay, attribs, &config, 1, &numConfigs)) {
 		LOGE("eglChooseConfig() returned error: %d", eglGetError());
 		destroy();
 		return false;
 	}
 
-	if (!eglGetConfigAttrib(display,config, EGL_NATIVE_VISUAL_ID,  &format)) {
+	if (!eglGetConfigAttrib(_renderDisplay,config, EGL_NATIVE_VISUAL_ID,  &format)) {
 		LOGE("eglGetConfigAttrib() returned error: %d", eglGetError());
 		destroy();
 		return false;
@@ -217,57 +245,41 @@ bool FrameRenderer::initDisplay() {
 
 	ANativeWindow_setBuffersGeometry(_renderWindow, 0, 0, format);
 
-	surface = eglCreateWindowSurface(display, config, _renderWindow, 0);
-	if (!surface) {
-		LOGE("eglCreateWindowSurface returned error: %d", eglGetError());
+	_renderSurface = eglCreateWindowSurface(_renderDisplay, config, _renderWindow, 0);
+	if (!_renderSurface) {
+		LOGE("eglCreateWindowSurface() returned error: %d", eglGetError());
 		destroy();
 		return false;
 	}
 
-	context = eglCreateContext(display, config, 0, 0);
-	if (!context) {
+	_eglContext = eglCreateContext(_renderDisplay, config, 0, contextAttrib);
+	if (!_eglContext) {
 		LOGE("eglCreateContext() returned error: %d", eglGetError());
 		destroy();
 		return false;
 	}
 
-	if (!eglMakeCurrent(display, surface, surface, context)) {
+	if (!eglMakeCurrent(_renderDisplay, _renderSurface, _renderSurface, _eglContext)) {
 		LOGE("eglMakeCurrent returned error: %d", eglGetError());
 		destroy();
 		return false;
 	}
 
-	if (!eglQuerySurface(display, surface, EGL_WIDTH, &width) ||
-	    !eglQuerySurface(display, surface, EGL_HEIGHT, &height)) {
+	if (!eglQuerySurface(_renderDisplay, _renderSurface, EGL_WIDTH, &width) ||
+	    !eglQuerySurface(_renderDisplay, _renderSurface, EGL_HEIGHT, &height)) {
 		LOGE("eglQuerySurface() returned error: %d", eglGetError());
 		destroy();
 		return false;
 	}
 
-	_renderDisplay = display;
-	_renderSurface = surface;
-	_eglContext = context;
-
 	glViewport(0, 0, width, height);
 
-	return true;
+	return initializeGL();
 }
 
-bool FrameRenderer::initializeGL(UsbTvFrame* frame) {
+bool FrameRenderer::initializeGL() {
 	bool success = true;
-	if (_yMaskBuffer != nullptr) {
-		free(_yMaskBuffer);
-		_yMaskBuffer = nullptr;
-	}
 
-	// Set up the Y-value mask.  Even values are 0, odd values are 2.  This allows the
-	// shader to determine which Y-Value to use when fetching a texel that contains a YUYV
-	// format vector.
-	size_t yBufferSize = frame->width * frame->height;
-	_yMaskBuffer = (uint8_t*)malloc(yBufferSize);
-	for (int i = 0; i < yBufferSize; i++) {
-		_yMaskBuffer[i] = (uint8_t)((i % 2)*2);
-	}
 
 	_shaderProgramId = loadShaderProgram(vertexShaderString, fragmentShaderString);
 	if (_shaderProgramId == 0) {
@@ -292,9 +304,8 @@ bool FrameRenderer::initializeGL(UsbTvFrame* frame) {
 	glActiveTexture(GL_TEXTURE2);
 	glBindTexture(GL_TEXTURE_2D, yMaskName[0]);
 
-	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+	glClearColor(0.0f, 1.0f, 0.0f, 0.0f);
 
-	_glInitialized = success;
 	return success;
 }
 
@@ -304,10 +315,7 @@ void FrameRenderer::destroy() {
 		_yMaskBuffer = nullptr;
 	}
 
-	if (_glInitialized) {
-		_glInitialized = false;
-		glDeleteProgram(_shaderProgramId);
-	}
+	glDeleteProgram(_shaderProgramId);
 
 	eglMakeCurrent(_renderDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 	eglDestroyContext(_renderDisplay, _eglContext);
@@ -341,31 +349,12 @@ void FrameRenderer::renderFrame(UsbTvFrame *frame) {
 			if (!initDisplay()) {
 				// Init display failed
 				_currentStatus = Status::STATUS_OFF;
-			} else if (!_glInitialized) {
-				// Successfully initialize display, GL not initialized
-
-				if (!initializeGL(frame)) {
-					// Init GL failed
-					_currentStatus = Status::STATUS_OFF;
-				} else {
-					// Successfully initialed GL
-					_currentStatus = Status::STATUS_STREAMING;
-				}
 			} else {
 				// Both Display and GL are initialized, proceed to render
 				_currentStatus = Status::STATUS_STREAMING;
 			}
 
 			// skip this frame
-			frame->lock--;
-			_renderMutex.unlock();
-			return;
-		case Status::STATUS_INIT_GL:
-			if (!initializeGL(frame)) {
-				_currentStatus = Status::STATUS_OFF;
-			} else {
-				_currentStatus = Status::STATUS_STREAMING;
-			}
 			frame->lock--;
 			_renderMutex.unlock();
 			return;
@@ -410,16 +399,23 @@ void FrameRenderer::renderFrame(UsbTvFrame *frame) {
 	glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+
+
 	// Draw
 	glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, _indicesBuffer);
 
-	// Release the Frame's lock
+
+	// swap egl buffers to display
+	eglSwapBuffers(_renderDisplay, _renderSurface);
+
+
+	// Release the Frame's lock, as we no longer need it
 	frame->lock--;
 	_renderMutex.unlock();
 }
 
-GLuint FrameRenderer::loadShaderProgram(const GLchar * const *vertexString,
-                                               const GLchar * const *fragmentString) {
+GLuint FrameRenderer::loadShaderProgram(const GLchar* vertexString,
+                                        const GLchar* fragmentString) {
 	GLuint vertexShaderId;
 	GLuint fragmentShaderId;
 	GLuint programId;
@@ -473,7 +469,7 @@ GLuint FrameRenderer::loadShaderProgram(const GLchar * const *vertexString,
 	return programId;
 }
 
-GLuint FrameRenderer::loadShader(GLenum type, const GLchar * const *shaderString) {
+GLuint FrameRenderer::loadShader(GLenum type, const GLchar* shaderString) {
 	GLuint shaderId;
 	GLint compiled[1];
 
@@ -483,7 +479,7 @@ GLuint FrameRenderer::loadShader(GLenum type, const GLchar * const *shaderString
 		return 0;
 	}
 
-	glShaderSource(shaderId, NUMBER_OF_LINES(shaderString), shaderString, NULL);
+	glShaderSource(shaderId, 1, &shaderString, NULL);
 	glCompileShader(shaderId);
 	glGetShaderiv(shaderId, GL_COMPILE_STATUS, compiled);
 

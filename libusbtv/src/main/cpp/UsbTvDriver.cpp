@@ -147,6 +147,11 @@ bool UsbTvDriver::startStreaming() {
 		allocateFramePool();
 		_usbInputFrame = fetchFrameFromPool();
 
+		// Init Native renderer y-mask
+		uint16_t height = (_scanType == ScanType::INTERLEAVED) ? _frameHeight :
+		                  (uint16_t )(_frameHeight / 2);
+		_glRenderer.initYmask(_frameWidth, height);
+
 		// Start Frame processing thread
 		if (_frameProcessThread == nullptr) {
 			_processThreadRunning = true;
