@@ -420,6 +420,7 @@ bool UsbTvDriver::setRegisters(const uint16_t regs[][2] , int size ) {
 
 /**
  * Allocates a pool of UsbTvFrame objects and their buffers
+ *
  */
 void UsbTvDriver::allocateFramePool() {
 	_framePoolMutex.lock();
@@ -430,6 +431,15 @@ void UsbTvDriver::allocateFramePool() {
 		size_t buffersize = _frameWidth * bufferheight * 2;  // width * height * bytes per pixel
 
 		// Setup callback to send pool references to the VM
+
+		// TODO: rather than callback to java to create a pool of frames there, create them here
+		// send them back to the callback.  Or even better, let java poll the
+		// getFrame() function, which returns the created java object that the struct below references
+		// JNI allows the user to set private fields, so that won't be a problem and shouldn't be
+		// too slow, especially since the setting of those fields would be happening in the
+		// thread that is polling getFrame()
+
+		// (pool index would be set here)
 		const char* signature = "(Ljava/nio/ByteBuffer;I)V";
 		const char* funcname = "nativePoolSetup";
 		jclass cls = _env->GetObjectClass(_usbtvObj);
