@@ -13,13 +13,7 @@ jint JNI_OnLoad(JavaVM *jvm, void *reserved);
 
 JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_initialize(JNIEnv* jenv,
                                                                       jobject thisObj,
-                                                                      jint fd,
-                                                                      jint isoEndpoint,
-                                                                      jint maxIsoPacketSize,
-                                                                      jint framePoolSize,
-                                                                      jint input,
-                                                                      jint norm,
-                                                                      jint scanType);
+                                                                      jobject params);
 
 JNIEXPORT void JNICALL Java_com_arksine_libusbtv_UsbTv_dispose(JNIEnv* jenv,
                                                                jobject thisObj);
@@ -33,7 +27,8 @@ JNIEXPORT void JNICALL Java_com_arksine_libusbtv_UsbTv_useCallback(JNIEnv* jenv,
                                                                   jboolean shouldUse);
 
 JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_startStreaming(JNIEnv* jenv,
-                                                                          jobject thisObj);
+                                                                          jobject thisObj,
+                                                                          jobject params);
 
 JNIEXPORT void JNICALL Java_com_arksine_libusbtv_UsbTv_stopStreaming(JNIEnv* jenv,
                                                                          jobject thisObj);
@@ -41,14 +36,6 @@ JNIEXPORT void JNICALL Java_com_arksine_libusbtv_UsbTv_stopStreaming(JNIEnv* jen
 JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_setInput(JNIEnv* jenv,
                                                                         jobject thisObj,
                                                                         jint input);
-
-JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_setTvNorm(JNIEnv* jenv,
-                                                                     jobject thisObj,
-                                                                     jint norm);
-
-JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_setScanType(JNIEnv* jenv,
-                                                                   jobject thisObj,
-                                                                   jint scanType);
 
 JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_setControl(JNIEnv* jenv,
                                                                       jobject thisObj,

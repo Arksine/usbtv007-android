@@ -143,6 +143,9 @@ public class FullscreenActivity extends AppCompatActivity {
                 mPreviewSurface.release();
             }
 
+            // Unregister Receiver
+            UsbTv.unregisterUsbReceiver(FullscreenActivity.this);
+
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
@@ -175,16 +178,10 @@ public class FullscreenActivity extends AppCompatActivity {
             }
         });
 
-        /*
-            Create Usbtv Device Params to initialize device settings.
-         */
-        DeviceParams params = new DeviceParams.Builder()
-                .setDriverCallbacks(mCallbacks)
-                .useLibraryReceiver(true)
-                .setInput(UsbTv.InputSelection.COMPOSITE)
-                .setScanType(UsbTv.ScanType.PROGRESSIVE)
-                .setTvNorm(UsbTv.TvNorm.NTSC)
-                .build();
+        // Register Library Receiver
+        UsbTv.registerUsbReceiver(this);
+
+
 
         mSurfaceHolder = mCameraView.getHolder();
         mSurfaceHolder.addCallback(mCameraViewCallback);
@@ -202,12 +199,25 @@ public class FullscreenActivity extends AppCompatActivity {
             Timber.i("Dev List Empty");
         }
 
-        if (device != null) {
-            Timber.i("Open Device");
-            UsbTv.open(device, this, params);
-        } else {
-            Timber.i("Can't open");
+        if (device == null) {
+            return;
         }
+
+        /*
+            Create Usbtv Device Params to initialize device settings.
+         */
+        DeviceParams params = new DeviceParams.Builder()
+                .setUsbDevice(device)
+                .setDriverCallbacks(mCallbacks)
+                .setInput(UsbTv.InputSelection.COMPOSITE)
+                .setScanType(UsbTv.ScanType.PROGRESSIVE)
+                .setTvNorm(UsbTv.TvNorm.NTSC)
+                .build();
+
+
+        Timber.i("Open Device");
+        UsbTv.open(this, params);
+
     }
 
     @Override

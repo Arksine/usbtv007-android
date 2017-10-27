@@ -10,46 +10,41 @@
 
 void frame_process_thread(Driver::ThreadContext* ctx);
 
-UsbTvDriver::UsbTvDriver(JNIEnv *env, jobject utvObj, JavaCallback* cb, int fd,
-                         int isoEndpoint, int maxIsoPacketSize, int framePoolSize,
-                         int input, int norm, int scanType)
-		: _frameProcessQueue((size_t)(framePoolSize - 1)){
+UsbTvDriver::UsbTvDriver(JNIEnv *env, JavaCallback* cb, jobject params)
+		: _paramsHelper(env){
 
-	_initalized = false;
+	_initialized = false;
 
-	if (env == nullptr || cb == nullptr || utvObj == nullptr) {
+	if (env == nullptr || cb == nullptr || params == nullptr) {
 		return;
 	}
-
 	_env = env;
+
+	/*
+	 *  Get initial values from the params object usings the helper class
+	 */
+
+	int fd = _paramsHelper.getFileDescriptor(env, params);
+	_framePoolSize = (uint16_t)_paramsHelper.getFramePoolSize(env, params);
+	_isoEndpoint = (uint8_t)_paramsHelper.getVideoEndpoint(env, params);
+	_maxIsoPacketSize = (uint32_t)_paramsHelper.getVideoUrbPacketSize(env, params);
+	// TODO: Audio Endpoint and Audio Urb Size should also be retreived here
+
+
+	_frameProcessQueue = new moodycamel::BlockingConcurrentQueue<UsbTvFrame*>((unsigned long)
+	                                                                          (_framePoolSize - 1));
+
+
 	_streamActive = false;
 	_framePool = nullptr;
-	_framePoolSize = (uint16_t)framePoolSize;
-
-	if (!setTvNorm(norm)){
-		return;
-	}
-
-	if (!setTvInput(input)) {
-		return;
-	}
-
-	if (!setScanType(scanType)) {
-		return;
-	}
-
-	_isoEndpoint = (uint8_t)isoEndpoint;
 	_numIsoPackets = USBTV_ISOC_PACKETS_PER_REQUEST;
-	_maxIsoPacketSize = (uint32_t)maxIsoPacketSize;
 	_currentFrameId = 0;
 	_lastOdd = true;
 	_secondFrame = false;
 	_packetsDone = 0;
 	_packetsPerField = 0;
 
-	_usbtvObj = env->NewGlobalRef(utvObj);
-	_usbConnection = new AndroidUsbDevice(fd, std::bind(&UsbTvDriver::onUrbReceived, this,
-	                                                    std::placeholders::_1));
+	_usbConnection = new AndroidUsbDevice(fd);
 
 	_useCallback = false;
 	_frameProcessThread = nullptr;
@@ -66,12 +61,13 @@ UsbTvDriver::UsbTvDriver(JNIEnv *env, jobject utvObj, JavaCallback* cb, int fd,
 #endif
 	// TODO: Initialize Audio Vars
 
-	_initalized = true;
+	_initialized = true;
 }
+
 
 UsbTvDriver::~UsbTvDriver() {
 
-	if(_initalized) {
+	if(_initialized) {
 		if (_streamActive) {
 			stopStreaming();
 		}
@@ -79,18 +75,48 @@ UsbTvDriver::~UsbTvDriver() {
 		LOGD("Streaming stopped");
 		// TODO: Delete any dynamic Audio Vars if necessary
 
-		_env->DeleteGlobalRef(_usbtvObj);
+		delete _frameProcessQueue;
 		delete _frameProcessContext;
 		delete _usbConnection;
 	}
 }
 
-bool UsbTvDriver::startStreaming() {
-	if (_initalized && !_streamActive) {
+bool UsbTvDriver::parseStreamingParams(jobject params) {
+
+	_frameParams.frameWidth = (uint16_t)_paramsHelper.getFrameWidth(_env, params);
+	_frameParams.frameHeight = (uint16_t)_paramsHelper.getFrameHeight(_env, params);
+	_frameParams.bufferSize = (uint32_t)_paramsHelper.getFrameSizeInBytes(_env, params);
+	_packetsPerField = (uint16_t)_paramsHelper.getVideoPacketsPerField(_env, params);
+
+	LOGD("Params Frame Width: %d", _frameParams.frameWidth);
+	LOGD("Params Frame Height: %d", _frameParams.frameHeight);
+	LOGD("Params Buffer Size: %d", _frameParams.bufferSize);
+	LOGD("Params Packets Per Field: %d", _packetsPerField);
+
+	// TODO: I should do checks on the ordinals, or just use switch statements to assign them
+	int ord = _paramsHelper.getNormOrdinal(_env, params);
+	_frameParams.norm = static_cast<TvNorm>(ord);
+	LOGD("Params TvNorm Ordinal: %d", ord);
+	ord = _paramsHelper.getScanTypeOrdinal(_env, params);
+	_frameParams.scanType = static_cast<ScanType>(ord);
+	LOGD("Params ScanType Ordinal: %d", ord);
+	ord = _paramsHelper.getInputSelectionOrdinal(_env, params);
+	_input = static_cast<TvInput>(ord);
+	LOGD("Params InputSelection Ordinal: %d", ord);
+
+	return true;
+}
+
+
+bool UsbTvDriver::startStreaming(jobject params) {
+	if (_initialized && !_streamActive) {
 		bool success;
 		_streamActive = true;
 		_droppedFrameCounter = 0;
 		_incompleteFrameCounter = 0;
+
+		// Setup Parameters
+		parseStreamingParams(params);
 
 		// TODO: Pause Audio when implemented
 
@@ -111,7 +137,7 @@ bool UsbTvDriver::startStreaming() {
 		}
 
 		// Set the TV Norm registers
-		switch (_tvNorm) {
+		switch (_frameParams.norm) {
 			case TvNorm::NTSC:
 				success = setRegisters(NTSC_TV_NORM, ARRAY_SIZE(NTSC_TV_NORM));
 				break;
@@ -143,14 +169,13 @@ bool UsbTvDriver::startStreaming() {
 		}
 
 		// Init variables that depend on user settings
-		_packetsPerField = uint16_t((_frameWidth * _frameHeight) / USBTV_PAYLOAD_SIZE);
-		allocateFramePool();
+
+		allocateFramePool(params);
 		_usbInputFrame = fetchFrameFromPool();
 
 		// Init Native renderer y-mask
-		uint16_t height = (_scanType == ScanType::INTERLEAVED) ? _frameHeight :
-		                  (uint16_t )(_frameHeight / 2);
-		_glRenderer.initYmask(_frameWidth, height);
+
+		_glRenderer.initYmask(_frameParams.frameWidth, _frameParams.frameHeight);
 
 		// Start Frame processing thread
 		if (_frameProcessThread == nullptr) {
@@ -180,7 +205,9 @@ bool UsbTvDriver::startStreaming() {
 
 		// Setup Isonchronous Usb Streaming
 		success =_usbConnection->initIsoTransfers(USBTV_ISOC_TRANSFERS, _isoEndpoint,
-		                                          _maxIsoPacketSize, _numIsoPackets);
+		                                          _maxIsoPacketSize, _numIsoPackets,
+		                                          std::bind(&UsbTvDriver::onUrbReceived, this,
+		                                                    std::placeholders::_1));
 
 		if (!success) {
 			LOGI("Could not Initialize Iso Transfers");
@@ -188,7 +215,7 @@ bool UsbTvDriver::startStreaming() {
 			return false;
 		}
 
-		success = _usbConnection->startIsoAsyncRead();
+		success = _usbConnection->startUrbAsyncRead();
 
 		if (!success) {
 			LOGI("Could not start Isonchrnous transfer Thread");
@@ -205,16 +232,16 @@ bool UsbTvDriver::startStreaming() {
 }
 
 void UsbTvDriver::stopStreaming() {
-	if (_initalized) {
+	if (_initialized) {
 		_streamActive = false;
 
 		// TODO: Stop Audio
 
-		_glRenderer.signalStop();       // Stop Rendering
+		_glRenderer.stop();       // Stop Rendering
 
 		// Stop Iso requests
 		if (_usbConnection->isIsoThreadRunning()) {
-			_usbConnection->stopIsoAsyncRead();
+			_usbConnection->stopUrbAsyncRead();
 		} else {
 			_usbConnection->discardIsoTransfers();
 		}
@@ -225,7 +252,7 @@ void UsbTvDriver::stopStreaming() {
 				_processThreadRunning = false;
 				UsbTvFrame *frame = nullptr;
 				// Enqueue a null frame to make sure that the thread exits its loop
-				_frameProcessQueue.enqueue(frame);
+				_frameProcessQueue->enqueue(frame);
 			}
 			_frameProcessThread->join();
 			delete _frameProcessThread;
@@ -238,7 +265,7 @@ void UsbTvDriver::stopStreaming() {
 
 		// Make sure the process queue is empty and all locks have been released
 		UsbTvFrame* frame;
-		while(_frameProcessQueue.try_dequeue(frame)) {
+		while(_frameProcessQueue->try_dequeue(frame)) {
 			if (frame != nullptr) {
 				frame->lock = 0;
 			}
@@ -260,32 +287,7 @@ void UsbTvDriver::stopStreaming() {
 	}
 }
 
-bool UsbTvDriver::setTvNorm(int norm) {
-	TvNorm old = _tvNorm;
-	switch (norm) {
-		case 0:
-			_tvNorm = TvNorm ::NTSC;
-			_frameWidth = 720;
-			_frameHeight = 480;
-			break;
-		case 1:
-			_tvNorm = TvNorm ::PAL;
-			_frameWidth = 720;
-			_frameHeight = 576;
-			break;
-		default:
-			LOGI("Invalid TV norm selection");
-			return false;
-	}
 
-	// If streaming, restart
-	if (_streamActive && old != _tvNorm) {
-		stopStreaming();
-		return startStreaming();
-	}
-
-	return true;
-}
 
 bool UsbTvDriver::setTvInput(int input) {
 	TvInput old = _input;
@@ -310,42 +312,16 @@ bool UsbTvDriver::setTvInput(int input) {
 	return true;
 }
 
-bool UsbTvDriver::setScanType(int scanType) {
-	ScanType old = _scanType;
-	switch (scanType) {
-		case 0:
-			_scanType = ScanType::PROGRESSIVE;
-			break;
-		case 1:
-			_scanType = ScanType::DISCARD;
-			break;
-		case 2:
-			_scanType = ScanType::INTERLEAVED;
-			break;
-		default:
-			LOGI("Invalid Scan Type selection");
-			return false;
-	}
-
-	// If streaming, restart
-	if (_streamActive && _scanType != old) {
-		stopStreaming();
-		return startStreaming();
-	}
-
-	return true;
-}
-
 bool UsbTvDriver::setControl(int control, int value) {
 
-	if (_initalized) {
+	if (_initialized) {
 		// TODO:
 	}
 	return false;
 }
 
 int UsbTvDriver::getControl(int control) {
-	if (_initalized) {
+	if (_initialized) {
 		// TODO:
 	}
 	return 0;
@@ -368,7 +344,7 @@ void UsbTvDriver::setRenderWindow(ANativeWindow* window) {
  */
 UsbTvFrame* UsbTvDriver::getFrame() {
 	UsbTvFrame* frame;
-	_frameProcessQueue.wait_dequeue(frame);
+	_frameProcessQueue->wait_dequeue(frame);
 	return frame;
 }
 
@@ -422,49 +398,37 @@ bool UsbTvDriver::setRegisters(const uint16_t regs[][2] , int size ) {
  * Allocates a pool of UsbTvFrame objects and their buffers
  *
  */
-void UsbTvDriver::allocateFramePool() {
+void UsbTvDriver::allocateFramePool(jobject params) {
 	_framePoolMutex.lock();
 	if (_framePool == nullptr) {
 		_framePool = new UsbTvFrame*[_framePoolSize];
-		uint32_t bufferheight = (_scanType == ScanType::INTERLEAVED) ? _frameHeight :
-		                        uint32_t(_frameHeight / 2);
-		size_t buffersize = _frameWidth * bufferheight * 2;  // width * height * bytes per pixel
 
-		// Setup callback to send pool references to the VM
-
-		// TODO: rather than callback to java to create a pool of frames there, create them here
-		// send them back to the callback.  Or even better, let java poll the
-		// getFrame() function, which returns the created java object that the struct below references
-		// JNI allows the user to set private fields, so that won't be a problem and shouldn't be
-		// too slow, especially since the setting of those fields would be happening in the
-		// thread that is polling getFrame()
-
-		// (pool index would be set here)
-		const char* signature = "(Ljava/nio/ByteBuffer;I)V";
-		const char* funcname = "nativePoolSetup";
-		jclass cls = _env->GetObjectClass(_usbtvObj);
-		jmethodID poolSetupMethod = _env->GetMethodID(cls, funcname, signature);
+		// Variables necessary to create Java UsbTvFrame objects.
+		const char* initSig = "(Lcom/arksine/libusbtv/DeviceParams;Ljava/nio/ByteBuffer;I)V";
+		jclass framecls = _env->FindClass("com/arksine/libusbtv/UsbTvFrame");
+		jmethodID midInit = _env->GetMethodID(framecls, "<init>", initSig);
 
 		// init frame pool
 		for (uint8_t i = 0; i < _framePoolSize; i++) {
 			_framePool[i] = new UsbTvFrame;
-			_framePool[i]->poolIndex = i;
-			_framePool[i]->buffer = malloc(buffersize);
-			_framePool[i]->bufferSize = (uint32_t) buffersize;
-			_framePool[i]->width = _frameWidth;
-			_framePool[i]->height = (uint16_t) bufferheight;
+			_framePool[i]->buffer = malloc(_frameParams.bufferSize);
 			_framePool[i]->flags = 0;
 			_framePool[i]->lock = 0;
+			_framePool[i]->frameId = 0;
+			_framePool[i]->params = &_frameParams;
 
-			// Create a DirectByteBuffer around the frame's buffer, then notify JVM so
-			// it can create a matching pool with references to the buffers
-			jobject bb = _env->NewDirectByteBuffer(_framePool[i]->buffer, buffersize);
-			_framePool[i]->byteBuffer = _env->NewGlobalRef(bb);
-			_env->CallVoidMethod(_usbtvObj, poolSetupMethod, bb, (jint)i);
+			// Each Frame in the FramePool also contains its corresponding java implementation
+			// That way it only needs to be handled here, and it the frame can be returned
+			// Through a function.
+			jobject bb = _env->NewDirectByteBuffer(_framePool[i]->buffer, _frameParams.bufferSize);
+			jobject jFrame = _env->NewObject(framecls, midInit, params, bb, (jint)i);
+			_framePool[i]->javaFrame = _env->NewGlobalRef(jFrame);
+
+			_env->DeleteLocalRef(jFrame);
 			_env->DeleteLocalRef(bb);
 		}
 
-		_env->DeleteLocalRef(cls);
+		_env->DeleteLocalRef(framecls);
 	}
 	_framePoolMutex.unlock();
 }
@@ -479,7 +443,7 @@ void UsbTvDriver::freeFramePool() {
 			if (_framePool[i]->lock != 0) {
 				LOGD("frame index %d still has a lock when attempting to free", i);
 			}
-			_env->DeleteGlobalRef(_framePool[i]->byteBuffer);
+			_env->DeleteGlobalRef(_framePool[i]->javaFrame);
 			free(_framePool[i]->buffer);
 			delete _framePool[i];
 		}
@@ -615,7 +579,7 @@ void UsbTvDriver::processPacket(__be32 *packet) {
 			_usbInputFrame->flags = FRAME_IN_PROGRESS;
 		}
 
-		switch (_scanType) {
+		switch (_frameParams.scanType) {
 			case ScanType::PROGRESSIVE:
 				packetToProgressiveFrame((uint8_t*)packet, packetNumber);
 				break;
@@ -654,7 +618,7 @@ void UsbTvDriver::checkFinishedFrame(bool isOdd) {
 	//  - For progressive 60, execute color conversion and render here.
 	//  - For progressive 30 only render if this is an ODD frame.
 	//  - For interleaved only render after an entire frame is received.
-	switch (_scanType){
+	switch (_frameParams.scanType){
 		case ScanType::PROGRESSIVE:
 			addCompleteFrameToQueue();
 			break;
@@ -695,7 +659,18 @@ void UsbTvDriver::packetToProgressiveFrame(uint8_t *packet, uint32_t packetNo) {
  * particlar method writes frames in an Top Field First interleaved method (Odd Frames
  * should be the first field)
  *
- * TODO: add detailed information as to how interleaved packets are processed
+ * Per the linux driver documentation, the driver sends FIELDS sequentially.  The first field
+ * holds the odd lines captured, the second field holds the even.  PACKETS contain a portion of
+ * the field, and they also come in sequentially.  Each packet holds 960 bytes of frame data,
+ * the equivalent of 2/3 of an actual line.  This results in 3 packets making two lines.
+ *
+ * This function breaks those packets in half, then writes them to their appropriate line.  It
+ * interleaves the fields, in Top Frame First order.  For example, an odd field received
+ * will be written to the buffer as follows:
+ *
+ * line 0: <packet[0][0]> <packet[0][1]> <packet[1][0]>
+ * line 2: <packet[1][1]> <packet[2][0]> <packet[2][1]>
+ * ...repeat until field is complete
  *
  * @param packet    The packet to write to the frame
  * @param packetNo  The number of the accompanying packet
@@ -706,7 +681,7 @@ void UsbTvDriver::packetToInterleavedFrame(uint8_t *packet, uint32_t packetNo, b
 	uint8_t packetHalf;
 	uint32_t halfPayloadSize = USBTV_PAYLOAD_SIZE / 2;
 	uint8_t oddFieldOffset = (uint8_t)((isOdd) ? 0 : 1);
-	int lineSize = _frameWidth * 2;  // Line width in bytes
+	int lineSize = _frameParams.frameWidth * 2;  // Line width in bytes
 
 	for (packetHalf = 0; packetHalf < 2; packetHalf++) {
 		// Get the overall index of the packet half I am operating on.
@@ -735,7 +710,7 @@ void UsbTvDriver::packetToInterleavedFrame(uint8_t *packet, uint32_t packetNo, b
  */
 void UsbTvDriver::addCompleteFrameToQueue() {
 	UsbTvFrame* frame = _usbInputFrame;
-	if (_frameProcessQueue.try_enqueue(frame)) {
+	if (_frameProcessQueue->try_enqueue(frame)) {
 		_usbInputFrame = fetchFrameFromPool();
 	} else {
 		LOGD("Frame Dropped, no space in process Queue. ID: %d", _currentFrameId);
@@ -816,9 +791,6 @@ void frame_process_thread(Driver::ThreadContext* ctx) {
 #endif
 
 	}
-
-	// TODO: Must call destroy on the renderer here.  The EGL context requires that
-	// everything be done on the same thread
 
 	ctx->callback->detachThread();
 	ctx->renderer->threadEndCheck();

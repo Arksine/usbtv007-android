@@ -1,15 +1,23 @@
 package com.arksine.libusbtv;
 
+import android.hardware.usb.UsbDevice;
 import android.support.annotation.NonNull;
 
-// TODO: add frame pool size
+
 /**
  * TODO: This will also have a "Device Type" when I make this library more generic.  That
- * also means that there will be a color space paramater
+ * also means that there will be a color space parameter
  */
 public class DeviceParams {
+    private final UsbDevice mDevice;
+    private final int mFileDescriptor;
+    private final int mVideoEndpoint;
+    private final int mAudioEndpoint;
+    private final int mVideoUrbPacketSize;
+    private final int mAudioUrbPacketSize;
+    private final int mVideoPacketsPerField;
+    private final boolean mCaptureAudio;
     private final UsbTv.DriverCallbacks mCallbacks;
-    private final boolean mUseInternalReceiver;
     private final int mFramePoolSize;
     private final int mFrameWidth;
     private final int mFrameHeight;
@@ -19,8 +27,15 @@ public class DeviceParams {
     private final UsbTv.InputSelection mInput;
 
     private DeviceParams(Builder builder) {
+        mDevice = builder.device;
+        mFileDescriptor = builder.fileDescriptor;
+        mVideoEndpoint = builder.videoEndpoint;
+        mAudioEndpoint = builder.audioEndpoint;
+        mVideoUrbPacketSize = builder.videoUrbPacketSize;
+        mAudioUrbPacketSize = builder.audioUrbPacketSize;
+        mVideoPacketsPerField = builder.videoPacketsPerField;
+        mCaptureAudio = builder.captureAudio;
         mCallbacks = builder.callbacks;
-        mUseInternalReceiver = builder.useInternalReceiver;
         mFramePoolSize = builder.framePoolSize;
         mFrameWidth = builder.frameWidth;
         mFrameHeight = builder.frameHeight;
@@ -29,13 +44,40 @@ public class DeviceParams {
         mScanType = builder.scanType;
         mInput = builder.input;
     }
+    public UsbDevice getUsbDevice() {
+        return mDevice;
+    }
+
+    public int getFileDescriptor() {
+        return mFileDescriptor;
+    }
+
+    public int getVideoEndpoint() {
+        return mVideoEndpoint;
+    }
+
+    public int getAudioEndpoint() {
+        return mAudioEndpoint;
+    }
+
+    public int getVideoUrbPacketSize() {
+        return mVideoUrbPacketSize;
+    }
+
+    public int getAudioUrbPacketSize() {
+        return mAudioUrbPacketSize;
+    }
+
+    public int getVideoPacketsPerField() {
+        return mVideoPacketsPerField;
+    }
+
+    public boolean isAudioEnabled() {
+        return mCaptureAudio;
+    }
 
     public UsbTv.DriverCallbacks getDriverCallbacks() {
         return mCallbacks;
-    }
-
-    public boolean isUsingInternalReceiver() {
-        return mUseInternalReceiver;
     }
 
     public int getFrameWidth() {
@@ -67,8 +109,15 @@ public class DeviceParams {
     }
 
     public static class Builder {
+        private UsbDevice device;
+        private int fileDescriptor;
+        private int videoEndpoint;
+        private int audioEndpoint;
+        private int videoUrbPacketSize;
+        private int audioUrbPacketSize;
+        private int videoPacketsPerField;
+        private boolean captureAudio;
         private UsbTv.DriverCallbacks callbacks;
-        private boolean useInternalReceiver;
         private int framePoolSize;
         private int frameWidth;
         private int frameHeight;
@@ -77,8 +126,15 @@ public class DeviceParams {
         private UsbTv.InputSelection input;
 
         public Builder() {
+            device = null;
+            fileDescriptor = -1;
+            videoEndpoint = -1;
+            audioEndpoint = -1;
+            videoUrbPacketSize = 0;
+            audioUrbPacketSize = 0;
+            videoPacketsPerField = 0;
+            captureAudio = false;
             callbacks = null;
-            useInternalReceiver = true;
             framePoolSize = 4;
             norm = UsbTv.TvNorm.NTSC;
             scanType = UsbTv.ScanType.PROGRESSIVE;
@@ -86,8 +142,15 @@ public class DeviceParams {
         }
 
         public Builder(@NonNull DeviceParams params) {
+            device = params.mDevice;
+            fileDescriptor = params.mFileDescriptor;
+            videoEndpoint = params.mVideoEndpoint;
+            audioEndpoint = params.mAudioEndpoint;
+            videoUrbPacketSize = params.mVideoUrbPacketSize;
+            audioUrbPacketSize = params.mAudioUrbPacketSize;
+            videoPacketsPerField = params.mVideoPacketsPerField;
+            captureAudio = params.mCaptureAudio;
             callbacks = params.mCallbacks;
-            useInternalReceiver = params.mUseInternalReceiver;
             framePoolSize = params.mFramePoolSize;
             frameWidth = params.mFrameWidth;
             frameHeight = params.mFrameHeight;
@@ -96,13 +159,18 @@ public class DeviceParams {
             input = params.mInput;
         }
 
-        public Builder setDriverCallbacks(@NonNull UsbTv.DriverCallbacks cbs) {
-            callbacks = cbs;
+        public Builder setUsbDevice(@NonNull UsbDevice capDevice) {
+            device = capDevice;
             return this;
         }
 
-        public Builder useLibraryReceiver(boolean use) {
-            useInternalReceiver = use;
+        public Builder setAudioCapture(boolean enabled) {
+            captureAudio = enabled;
+            return this;
+        }
+
+        public Builder setDriverCallbacks(@NonNull UsbTv.DriverCallbacks cbs) {
+            callbacks = cbs;
             return this;
         }
 
@@ -126,6 +194,7 @@ public class DeviceParams {
             return this;
         }
 
+        // TODO: if the USB Device hasnt been set, should I do something here?
         public DeviceParams build() {
             if (callbacks == null) {
                 callbacks = new UsbTv.DriverCallbacks() {
@@ -158,10 +227,43 @@ public class DeviceParams {
                     frameHeight = 480;
             }
 
+            videoPacketsPerField = (frameWidth * frameHeight) / UsbTv.USBTV_PAYLOAD_SIZE;
+
             // Non-interleaved frames are half height
             if (scanType != UsbTv.ScanType.INTERLEAVED) {
                 frameHeight /= 2;
             }
         }
+
+        /*
+         * The Following Paramaters can ONLY be set by the drive, as it determines
+         * which values are valid.  Thus, they are given package local access.
+         */
+
+        Builder setFileDescriptor(int fd) {
+            fileDescriptor = fd;
+            return this;
+        }
+
+        Builder setVideoEndpoint(int vidEp) {
+            videoEndpoint = vidEp;
+            return this;
+        }
+
+        Builder setAudioEp(int audEp) {
+            audioEndpoint = audEp;
+            return this;
+        }
+
+        Builder setVideoUrbPacketSize(int packetSize) {
+            videoUrbPacketSize = packetSize;
+            return this;
+        }
+
+        Builder setAudioUrbPacketSize(int packetSize) {
+            audioUrbPacketSize = packetSize;
+            return this;
+        }
+
     }
 }

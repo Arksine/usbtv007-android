@@ -165,6 +165,9 @@ public class FullscreenActivity extends AppCompatActivity {
                 mPreviewSurface.release();
             }
 
+            // Unregister Library Receiver
+            UsbTv.unregisterUsbReceiver(FullscreenActivity.this);
+
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
@@ -198,27 +201,11 @@ public class FullscreenActivity extends AppCompatActivity {
             }
         });
 
-        /*
-            Create Usbtv Device Params to initialize device settings.
-         */
-        DeviceParams params = new DeviceParams.Builder()
-                .setDriverCallbacks(mCallbacks)
-                .useLibraryReceiver(true)
-                .setInput(UsbTv.InputSelection.COMPOSITE)
-                .setScanType(UsbTv.ScanType.PROGRESSIVE)
-                .setTvNorm(UsbTv.TvNorm.NTSC)
-                .build();
+        // Register Library Broadcast Receiver
+        UsbTv.registerUsbReceiver(this);
 
-        /*
-            After Getting the Surface Holder, you need to set its dimensions and format
-            If you want to use the built-in renderer.  Note that if you change a setting
-            that alters the incoming frame size, you will need a new surface with a new
-            fixed size.  The best way to do this is to stop streaming, then reset the
-            frame size which will trigger the onSurfaceChanged listener.
-         */
+
         mSurfaceHolder = mCameraView.getHolder();
-        mSurfaceHolder.setFixedSize(params.getFrameWidth(), params.getFrameHeight());
-        mSurfaceHolder.setFormat(PixelFormat.RGBA_8888);
         mSurfaceHolder.addCallback(mCameraViewCallback);
 
         /*
@@ -234,6 +221,35 @@ public class FullscreenActivity extends AppCompatActivity {
             Timber.i("Dev List Empty");
         }
 
+        if (device == null) {
+            Timber.i("Can't open");
+            return;
+        }
+
+         /*
+            Create Usbtv Device Params to initialize device settings.
+         */
+        DeviceParams params = new DeviceParams.Builder()
+                .setUsbDevice(device)
+                .setDriverCallbacks(mCallbacks)
+                .setInput(UsbTv.InputSelection.COMPOSITE)
+                .setScanType(UsbTv.ScanType.PROGRESSIVE)
+                .setTvNorm(UsbTv.TvNorm.NTSC)
+                .build();
+
+        /*
+            When using renderscript's surface producer functionality, you must set
+            the surface to a fixed size.  We can use the size calculated after
+            setting the device params.  NOTE: If you change the params and it results
+            in a different frame height (ie changing from NTSC to PAL), then
+            the surface size will need to be reset.
+         */
+
+        mSurfaceHolder.setFixedSize(params.getFrameWidth(), params.getFrameHeight());
+        mSurfaceHolder.setFormat(PixelFormat.RGBA_8888);
+
+
+
         /*
             TODO: This doesn't work well when the device is rotated.  When the surface is destroyed
              streaming stops, however its almost as if the device is disconnected  (its possible
@@ -248,12 +264,10 @@ public class FullscreenActivity extends AppCompatActivity {
             Attempt to open the device.  A driver interface will be passed to the onOpen
             callback if the open was successful.
          */
-        if (device != null) {
-            Timber.i("Open Device");
-            UsbTv.open(device, this, params);
-        } else {
-            Timber.i("Can't open");
-        }
+
+        Timber.i("Open Device");
+        UsbTv.open(this, params);
+
     }
 
     @Override

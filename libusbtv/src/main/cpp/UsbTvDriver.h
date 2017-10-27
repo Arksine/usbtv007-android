@@ -12,6 +12,7 @@
 #include "FrameRenderer.h"
 #include "JavaCallback.h"
 #include "ConcurrentQueue/blockingconcurrentqueue.h"
+#include "DeviceParamsHelper.h"
 
 class UsbTvDriver;
 
@@ -27,15 +28,16 @@ namespace Driver {
 
 class UsbTvDriver {
 private:
-	bool _initalized; // Variable to check to make sure constructor successfully completed
+	bool _initialized; // Variable to check to make sure constructor successfully completed
+	bool _streamActive;
 
 	JNIEnv* _env;        // Reference to Java environment from local thread
-	jobject _usbtvObj;   // Global reference to Java UsbTv Object
+
+	DeviceParamsHelper _paramsHelper;
+	FrameParams        _frameParams;
 
 	/* Video Members */
 	TvInput     _input;
-	TvNorm      _tvNorm;
-	ScanType    _scanType;
 
 	uint16_t        _framePoolSize;
 	UsbTvFrame**    _framePool;
@@ -43,11 +45,6 @@ private:
 
 	AndroidUsbDevice*   _usbConnection;
 	bool                _useCallback;
-
-	bool _streamActive;
-
-	uint16_t _frameWidth;
-	uint16_t _frameHeight;
 
 	// Isonchronous Transfer Variables
 	uint8_t     _isoEndpoint;
@@ -67,7 +64,7 @@ private:
 	bool                    _processThreadRunning;
 	std::thread*            _frameProcessThread;
 
-	moodycamel::BlockingConcurrentQueue<UsbTvFrame*>    _frameProcessQueue;
+	moodycamel::BlockingConcurrentQueue<UsbTvFrame*>*    _frameProcessQueue;
 
 	FrameRenderer _glRenderer;
 
@@ -83,10 +80,10 @@ private:
 	/* Private Member Functions */
 	bool setRegisters(const uint16_t regs[][2], int size);
 	UsbTvFrame* fetchFrameFromPool();
-	void allocateFramePool();
+	void allocateFramePool(jobject params);
 	void freeFramePool();
 
-	// Callback executed when a urb is received from USB
+	bool parseStreamingParams(jobject params);
 	void onUrbReceived(usbdevfs_urb* urb);
 	void processPacket(__be32* packet);
 	void packetToProgressiveFrame(uint8_t* packet, uint32_t packetNo);
@@ -94,12 +91,12 @@ private:
 	void checkFinishedFrame(bool isOdd);
 	void addCompleteFrameToQueue();
 
+
 public:
-	UsbTvDriver(JNIEnv *env, jobject utvObj, JavaCallback* cb, int fd, int isoEndpoint,
-	            int maxIsoPacketSize, int framePoolSize, int input, int norm, int scanType);
+	UsbTvDriver(JNIEnv *env, JavaCallback* cb, jobject params);
 	~UsbTvDriver();
 
-	bool isInitialized() { return _initalized;}
+	bool isInitialized() { return _initialized;}
 	bool isStreaming() { return _streamActive;};
 
 
@@ -109,11 +106,9 @@ public:
 	UsbTvFrame* getFrame();
 	bool clearFrameLock(int framePoolIndex);
 
-	bool startStreaming();
+	bool startStreaming(jobject params);
 	void stopStreaming();
-	bool setTvNorm(int norm);
 	bool setTvInput(int input);
-	bool setScanType(int scanType);
 	bool setControl(int control, int value);
 	int  getControl(int control);
 

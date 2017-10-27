@@ -146,7 +146,7 @@ void FrameRenderer::threadEndCheck() {
 	_renderMutex.unlock();
 }
 
-void FrameRenderer::signalStop() {
+void FrameRenderer::stop() {
 	_renderMutex.lock();
 	if (_currentStatus != Status::STATUS_OFF) {
 		_currentStatus = Status::STATUS_STOP;
@@ -243,6 +243,7 @@ bool FrameRenderer::initDisplay() {
 		return false;
 	}
 
+	// TODO: This should be set to the frame's width and height
 	ANativeWindow_setBuffersGeometry(_renderWindow, 0, 0, format);
 
 	_renderSurface = eglCreateWindowSurface(_renderDisplay, config, _renderWindow, 0);
@@ -382,8 +383,9 @@ void FrameRenderer::renderFrame(UsbTvFrame *frame) {
 	// Set up YUV texture
 	glActiveTexture(GL_TEXTURE1);
 	glUniform1i(_yuvTextureId, 1);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, frame->width / 2, frame->height, 0,
-	             GL_RGBA, GL_UNSIGNED_BYTE, frame->buffer);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, frame->params->frameWidth / 2,
+	             frame->params->frameHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+	             frame->buffer);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -392,8 +394,9 @@ void FrameRenderer::renderFrame(UsbTvFrame *frame) {
 	// Set up Y-Mask
 	glActiveTexture(GL_TEXTURE2);
 	glUniform1i(_yuvMaskId, 2);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, frame->width, frame->height, 0,
-	             GL_LUMINANCE, GL_UNSIGNED_BYTE, _yMaskBuffer);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, frame->params->frameWidth,
+	             frame->params->frameHeight, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE,
+	             _yMaskBuffer);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);

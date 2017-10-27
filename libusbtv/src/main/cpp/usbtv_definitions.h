@@ -47,23 +47,6 @@
 #define FRAME_COMPLETE      (1 << 2)
 #define FRAME_PARTIAL       (1 << 3)
 
-// TODO: add colorspace and scantype so that receiving functions know how to process it. Also
-// add TvNorm and a Flag for Frame Status (complete, incomplete, other possible statuses)
-
-// TODO: I need another atomic flag, or atomic counter?
-struct UsbTvFrame {
-	void*       buffer;
-	uint8_t     poolIndex;
-	uint32_t    bufferSize;
-	uint16_t    width;
-	uint16_t    height;
-	uint32_t    frameId;
-	uint32_t    flags;
-	jobject     byteBuffer;     // This is a reference to a bytebuffer that will be sent to java via cb
-
-	std::atomic_uint_fast8_t lock = ATOMIC_VAR_INIT(0);
-};
-
 enum struct TvInput {
 	USBTV_COMPOSITE_INPUT,
 	USBTV_SVIDEO_INPUT,
@@ -86,6 +69,28 @@ enum struct ColorControl {
 	SATURATION,
 	HUE,
 	SHARPNESS
+};
+
+struct FrameParams {
+	uint16_t    frameWidth;
+	uint16_t    frameHeight;
+	TvNorm      norm;
+	ScanType    scanType;
+	uint32_t    bufferSize;
+};
+
+// TODO: add colorspace and scantype so that receiving functions know how to process it. Also
+// add TvNorm and a Flag for Frame Status (complete, incomplete, other possible statuses)
+
+// TODO: I need another atomic flag, or atomic counter?
+struct UsbTvFrame {
+	void*           buffer;
+	FrameParams*    params;
+	uint32_t        frameId;
+	uint32_t        flags;
+	jobject         javaFrame;     // This is a reference to Java Class implementation of this frame.
+
+	std::atomic_uint_fast8_t lock = ATOMIC_VAR_INIT(0);
 };
 
 /*Control Register Definitions*/

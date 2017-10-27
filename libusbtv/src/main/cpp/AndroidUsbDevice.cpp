@@ -8,29 +8,24 @@
 
 // TODO: If a bulk transfer returns -EPIPE, it is stalled.  Need to ioctl send clear halt
 
-void iso_read_thread(UsbDevice::ThreadContext* ctx);
 
-AndroidUsbDevice::AndroidUsbDevice(int fd, IsonchronousCallback callback) {
+
+AndroidUsbDevice::AndroidUsbDevice(int fd) {
 	_fileDescriptor = fd;
-	_isoThread = nullptr;
+	_urbThread = nullptr;
 	_isoUrbPool = nullptr;
 	_isoTransfersAllocated = 0;
 	_isoTransfersSubmitted = 0;
 	_isoEndpoint = 0;
 	_maxIsoPacketLength = 0;
 	_numIsoPackets = 0;
-	_isoThreadRunning = false;
-	_isoThreadCtx = new UsbDevice::ThreadContext;
-	_isoThreadCtx->parent = this;
-	_isoThreadCtx->isoThreadRunning = &_isoThreadRunning;
-	_isoThreadCtx->callback = callback;
+	_urbThreadRunning = false;
 }
 
 AndroidUsbDevice::~AndroidUsbDevice() {
-	if (_isoThreadRunning) {
-		stopIsoAsyncRead();
+	if (_urbThreadRunning) {
+		stopUrbAsyncRead();
 	}
-	delete _isoThreadCtx;
 	discardIsoTransfers();
 	freeIsoTransfers();
 }
@@ -224,12 +219,14 @@ int AndroidUsbDevice::bulkWrite(uint8_t endpoint, unsigned int length, unsigned 
  * @param endpoint
  * @param packetLength
  * @param numberOfPackets
+ * @param callback
  * @return
  */
 bool AndroidUsbDevice::initIsoTransfers(uint8_t numTransfers, uint8_t endpoint,
-                                        uint32_t packetLength, uint8_t numberOfPackets) {
+                                        uint32_t packetLength, uint8_t numberOfPackets,
+                                        UrbCallback callback) {
 
-	_isoMutex.lock();
+	_urbMutex.lock();
 	bool success = true;
 	if (_isoTransfersSubmitted > 0) {
 		// TODO: Should I just return false?
@@ -241,6 +238,8 @@ bool AndroidUsbDevice::initIsoTransfers(uint8_t numTransfers, uint8_t endpoint,
 		freeIsoTransfers();
 	}
 
+	_isoUrbCtx.usbDevice = this;
+	_isoUrbCtx.callback = callback;
 	allocateIsoTransfers(packetLength, numberOfPackets, numTransfers);
 
 	for (int i = 0; i < numTransfers; i++) {
@@ -266,7 +265,7 @@ bool AndroidUsbDevice::initIsoTransfers(uint8_t numTransfers, uint8_t endpoint,
 		_numIsoPackets = numberOfPackets;
 	}
 
-	_isoMutex.unlock();
+	_urbMutex.unlock();
 
 	return success;
 }
@@ -298,7 +297,7 @@ bool AndroidUsbDevice::submitIsoUrb(usbdevfs_urb *urb, uint8_t endpoint, uint32_
 	urb->number_of_packets = numberOfPackets;
 	urb->error_count = 0;
 	urb->signr = 0;
-	urb->usercontext = this;
+	urb->usercontext = &_isoUrbCtx;
 
 	for (int i = 0; i < numberOfPackets; i++) {
 		urb->iso_frame_desc[i].length = packetLength;
@@ -399,21 +398,21 @@ void AndroidUsbDevice::allocateIsoTransfers(uint32_t packetLength, uint8_t numbe
  * @param cb The Callback to execute when an iso request is received
  * @return
  */
-bool AndroidUsbDevice::startIsoAsyncRead() {
+bool AndroidUsbDevice::startUrbAsyncRead() {
 	bool success = true;
-	_isoMutex.lock();
-	if (_isoThread == nullptr) {
-		_isoThreadRunning = true;
-		_isoThread = new std::thread(iso_read_thread, _isoThreadCtx);
-		if ( _isoThread == nullptr) {
-			_isoThreadRunning = false;
+	_urbMutex.lock();
+	if (_urbThread == nullptr) {
+		_urbThreadRunning = true;
+		_urbThread = new std::thread(&AndroidUsbDevice::reapUrbAsync, this);
+		if ( _urbThread == nullptr) {
+			_urbThreadRunning = false;
 			LOGE("Error starting isonchronous transfer thread");
 			success = false;
 		}
 	} else {
 		success = false;
 	}
-	_isoMutex.unlock();
+	_urbMutex.unlock();
 
 	return success;
 }
@@ -421,17 +420,21 @@ bool AndroidUsbDevice::startIsoAsyncRead() {
 /**
  * Stops async iso read thread.
  */
-void AndroidUsbDevice::stopIsoAsyncRead() {
-	_isoMutex.lock();
-	if (_isoThread != nullptr) {
-		_isoThreadRunning = false;
-		_isoThread->join();
-		delete _isoThread;
-		_isoThread = nullptr;
+void AndroidUsbDevice::stopUrbAsyncRead() {
+	_urbMutex.lock();
+	if (_urbThread != nullptr) {
+		_urbThreadRunning = false;
+		// TODO: I could submit a dummy urb to stop this thread if zero urbs are submitted.
+		// That way this class can handle the async thread, rather than the calling
+		// class
+
+		_urbThread->join();
+		delete _urbThread;
+		_urbThread = nullptr;
 		discardIsoTransfers();
 
 	}
-	_isoMutex.unlock();
+	_urbMutex.unlock();
 }
 
 /**
@@ -457,28 +460,27 @@ usbdevfs_urb* AndroidUsbDevice::isoReadSync(bool wait) {
 }
 
 /**
- * Function for iso read thread
- * @param context Contains contextual data shared with the caller
- * @return
+ * Function bound to the urbThread;
  */
-void iso_read_thread(UsbDevice::ThreadContext* ctx) {
-	int fd = ctx->parent->getFileDescriptor();
+void AndroidUsbDevice::reapUrbAsync() {
 	int ret;
 
 	LOGD("Iso thread start.  Thread Running: %s",
-	*(ctx->isoThreadRunning) ? "true" : "false");
+	     _urbThreadRunning ? "true" : "false");
 
-	while(*(ctx->isoThreadRunning)) {
+	while (_urbThreadRunning) {
+
 		usbdevfs_urb* urb = nullptr;
-		ret = ioctl(fd, USBDEVFS_REAPURB, &urb);
+		ret = ioctl(_fileDescriptor, USBDEVFS_REAPURB, &urb);
+
+		// TODO: I need to be able to handle ISO and bulk urbs.  I could change the context
+		// For Bulk urbs or just look at the URB type
 
 		switch (ret) {
 			case 0:
-				if (urb->usercontext == ctx->parent) {
-					// TODO: Profile URB execution time
-					// Got a valid urb that was submitted from this context
-					ctx->callback(urb);
-				}
+				// Execute the callback
+				((UsbDevice::UrbContext*)urb->usercontext)->callback(urb);
+
 				break;
 			case -EAGAIN:
 				// Recoverable error, attempt to resubmit
@@ -489,21 +491,23 @@ void iso_read_thread(UsbDevice::ThreadContext* ctx) {
 			case -ESHUTDOWN:
 				// TODO: I don't think these errors are recoverable.  I need to signal
 				// an Exit to the Parent Driver so it can clean up
-				*(ctx->isoThreadRunning) = false;
+				_urbThreadRunning = false;
 				return;
 			default:
 				// Recoverable?
 				break;
 		}
 
+		// TODO: callback function should resubmit if it is run on another thread.  That
+		// means I should only resubmit here if I am dealing with recoverable error
+
 		// resubmit if this is one of our urbs
-		if (urb != nullptr && urb->usercontext == ctx->parent) {
-
-			ctx->parent->resubmitIsoUrb(urb);
+		if (urb != nullptr) {
+			// TODO: This could be a bulk urb as well
+			((UsbDevice::UrbContext*)urb->usercontext)->usbDevice->resubmitIsoUrb(urb);
 		}
-
 	}
-
-	return;
 }
+
+
 

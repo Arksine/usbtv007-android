@@ -14,6 +14,7 @@ public class UsbTvFrame {
 
     private AtomicBoolean mLocked = new AtomicBoolean(false);
     private int mFrameId;
+    private int mFlags;                         // For future use
     private final ByteBuffer mFrameBuf;
     private final int mPoolIndex;
     private final DeviceParams mParams;
@@ -22,6 +23,7 @@ public class UsbTvFrame {
         mFrameBuf = frameBuf;
         mParams = params;
         mPoolIndex = poolIndex;
+        mFlags = 0;
         mFrameId = -1;
     }
 

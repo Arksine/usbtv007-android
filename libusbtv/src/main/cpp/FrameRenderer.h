@@ -6,9 +6,11 @@
 #define USBTV007_ANDROID_FRAMERENDERER_H
 
 #include "usbtv_definitions.h"
+#include "ConcurrentQueue/blockingconcurrentqueue.h"
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <mutex>
+#include <thread>
 // TODO: Just stubbing out a few functions, will implement later
 
 
@@ -25,7 +27,11 @@ private:
 	};
 
 	Status      _currentStatus;
-	std::mutex  _renderMutex;
+
+	std::thread*    _renderThread;
+	std::mutex      _renderMutex;
+
+	moodycamel::BlockingConcurrentQueue<UsbTvFrame*>* _frameQueue;
 
 	ANativeWindow*  _renderWindow;
 	EGLDisplay      _renderDisplay;
@@ -50,7 +56,7 @@ private:
 	bool initializeGL();
 	bool initDisplay();
 	void destroy();
-
+	void drawFrame();
 
 	static GLuint loadShaderProgram(const GLchar* vertexString,
 	                                const GLchar* fragmentString);
@@ -60,8 +66,16 @@ public:
 	~FrameRenderer();
 
 	void setRenderWindow(ANativeWindow* win);
+	void onSurfaceChanged(int width, int height);  // not sure if I need this.  I can set the native window's buffer geometry and never change it
 	void renderFrame(UsbTvFrame* frame);
-	void signalStop();
+
+	void enterMessageLoop();
+
+	// TODO: I could just restart the thread every time a new surface is created, rather
+	// than create a message loop.  Every time the thread starts the first thing it does
+	// is initialize the EGL context and the OGL params (such as the shaders)
+	void start();
+	void stop();
 
 	void threadStartCheck();
 	void threadEndCheck();

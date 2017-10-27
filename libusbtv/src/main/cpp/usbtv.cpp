@@ -31,13 +31,7 @@ jint JNI_OnLoad(JavaVM *jvm, void *reserved) {
 
 JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_initialize(JNIEnv* jenv,
                                                                       jobject thisObj,
-                                                                      jint fd,
-                                                                      jint isoEndpoint,
-                                                                      jint maxIsoPacketSize,
-                                                                      jint framePoolSize,
-                                                                      jint input,
-                                                                      jint norm,
-                                                                      jint scanType) {
+                                                                      jobject params) {
 	if (javaVm == nullptr) {
 		LOGE("Error, Java VM pointer is not initialized");
 		return (jboolean) false;
@@ -52,11 +46,10 @@ JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_initialize(JNIEnv* je
 		delete callback;
 	}
 
-	callback = new JavaCallback(javaVm, thisObj, "nativeFrameCallback", "(II)V");
+	callback = new JavaCallback(javaVm, thisObj, "nativeFrameCallback",
+	                            "(Lcom/arksine/libusbtv/UsbTvFrame;II)V");
 
-	usbtv = new UsbTvDriver(jenv, thisObj, callback, (int)fd, (int)isoEndpoint,
-	                        (int)maxIsoPacketSize, (int)framePoolSize, (int)input,
-	                        (int)norm, (int)scanType);
+	usbtv = new UsbTvDriver(jenv, callback, params);
 
 	if (!usbtv->isInitialized()) {
 		LOGE("Error Initializing UsbTV Driver");
@@ -110,9 +103,10 @@ JNIEXPORT void JNICALL Java_com_arksine_libusbtv_UsbTv_useCallback(JNIEnv* jenv,
 
 
 JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_startStreaming(JNIEnv* jenv,
-                                                                          jobject thisObj) {
+                                                                          jobject thisObj,
+                                                                          jobject params) {
 	if (usbtv != nullptr) {
-		return (jboolean)usbtv->startStreaming();
+		return (jboolean)usbtv->startStreaming(params);
 	} else {
 		return (jboolean)false;
 	}
@@ -137,26 +131,6 @@ JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_setInput(JNIEnv* jenv
 
 }
 
-JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_setTvNorm(JNIEnv* jenv,
-                                                                 jobject thisObj,
-                                                                 jint norm) {
-	if (usbtv != nullptr) {
-		return (jboolean)usbtv->setTvNorm((int)norm);
-	} else {
-		return (jboolean)false;
-	}
-
-}
-
-JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_setScanType(JNIEnv* jenv,
-                                                                   jobject thisObj,
-                                                                   jint scanType) {
-	if (usbtv != nullptr) {
-		return (jboolean)usbtv->setScanType((int)scanType);
-	} else {
-		return (jboolean)false;
-	}
-}
 
 JNIEXPORT jboolean JNICALL Java_com_arksine_libusbtv_UsbTv_setControl(JNIEnv* jenv,
                                                                   jobject thisObj,

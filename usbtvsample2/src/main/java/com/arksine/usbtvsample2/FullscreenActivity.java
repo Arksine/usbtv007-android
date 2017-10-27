@@ -134,6 +134,9 @@ public class FullscreenActivity extends AppCompatActivity {
         public void onClose() {
             Timber.i("UsbTv Device Closed");
 
+            // Unregister Usb Receiver
+            UsbTv.unregisterUsbReceiver(FullscreenActivity.this);
+
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
@@ -142,6 +145,8 @@ public class FullscreenActivity extends AppCompatActivity {
                 }
             });
         }
+
+
 
         @Override
         public void onError() {
@@ -168,34 +173,8 @@ public class FullscreenActivity extends AppCompatActivity {
             }
         });
 
-        /*
-            Create Usbtv Device Params to initialize device settings.
-         */
-        mUsbTvParams = new DeviceParams.Builder()
-                .setDriverCallbacks(mCallbacks)
-                .useLibraryReceiver(true)
-                .setInput(UsbTv.InputSelection.COMPOSITE)
-                .setScanType(UsbTv.ScanType.PROGRESSIVE)
-                .setTvNorm(UsbTv.TvNorm.NTSC)
-                .build();
-
-        // Set up the OGL Renderer and attach it to the GLSurface view.
-        mRenderer = new OGLRenderer(this, mUsbTvParams);
-        mRenderer.setOnSurfaceCratedListener(new OGLRenderer.OnSurfaceCreatedListener() {
-            @Override
-            public void onGLSurfaceCreated() {
-                // Wait until the GL Surface is created before attempting to stream
-                synchronized (CAM_LOCK) {
-                    mSurfaceCreated = true;
-                    if (mTestDriver != null && !mTestDriver.isStreaming()) {
-                        mTestDriver.startStreaming();
-                    }
-                }
-
-            }
-        });
-        mCameraView.setEGLContextClientVersion(2);
-        mCameraView.setRenderer(mRenderer);
+        // Register Usb Reciever
+        UsbTv.registerUsbReceiver(this);
 
         usbTvOpen();
     }
@@ -265,9 +244,6 @@ public class FullscreenActivity extends AppCompatActivity {
             return;
         }
 
-        if (mUsbTvParams == null) {
-            Timber.e("Cannot open, Params not initialized");
-        }
         /*
             Enumerate available UsbTv Devices.  If there are more than one connected then
             you will need to parse and decide which one you want to use based on
@@ -280,6 +256,47 @@ public class FullscreenActivity extends AppCompatActivity {
         } else {
             Timber.i("Dev List Empty");
         }
+
+        if (device == null) {
+            return;
+        }
+
+        /*
+            Create Usbtv Device Params to initialize device settings.
+         */
+        mUsbTvParams = new DeviceParams.Builder()
+                .setUsbDevice(device)
+                .setDriverCallbacks(mCallbacks)
+                .setInput(UsbTv.InputSelection.COMPOSITE)
+                .setScanType(UsbTv.ScanType.PROGRESSIVE)
+                .setTvNorm(UsbTv.TvNorm.NTSC)
+                .build();
+
+
+
+        // Set the surface to a fixed size, matching the size of the frame. This enables
+        // the hardware scaler, which is more efficient, and makes the glViewPort identical
+        // to the expected frame size. The positive side affect of this is that it allows
+        // me to render each pixel without using a y-mask.
+        mCameraView.getHolder().setFixedSize(mUsbTvParams.getFrameWidth(), mUsbTvParams.getFrameHeight());
+
+        // Set up the OGL Renderer and attach it to the GLSurface view.
+        mRenderer = new OGLRenderer(this, mUsbTvParams);
+        mRenderer.setOnSurfaceCratedListener(new OGLRenderer.OnSurfaceCreatedListener() {
+            @Override
+            public void onGLSurfaceCreated() {
+                // Wait until the GL Surface is created before attempting to stream
+                synchronized (CAM_LOCK) {
+                    mSurfaceCreated = true;
+                    if (mTestDriver != null && !mTestDriver.isStreaming()) {
+                        mTestDriver.startStreaming();
+                    }
+                }
+
+            }
+        });
+        mCameraView.setEGLContextClientVersion(2);
+        mCameraView.setRenderer(mRenderer);
 
         /*
             TODO: This doesn't work well when the device is rotated.  When the surface is destroyed
@@ -295,12 +312,10 @@ public class FullscreenActivity extends AppCompatActivity {
             Attempt to open the device.  A driver interface will be passed to the onOpen
             callback if the open was successful.
          */
-        if (device != null) {
-            Timber.i("Open Device");
-            UsbTv.open(device, getApplicationContext(), mUsbTvParams);
-        } else {
-            Timber.i("Can't open");
-        }
+
+        Timber.i("Open Device");
+        UsbTv.open(getApplicationContext(), mUsbTvParams);
+
     }
 
     private void toggle() {

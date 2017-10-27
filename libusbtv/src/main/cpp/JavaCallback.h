@@ -87,8 +87,8 @@ public:
 
 	void invoke(UsbTvFrame* frame) {
 		if (_threadAttached) {
-			_env->CallVoidMethod(_methodParent, _cbMethod, (jint)frame->poolIndex,
-			                     (jint) frame->frameId);
+			_env->CallVoidMethod(_methodParent, _cbMethod, frame->javaFrame,
+			                     (jint) frame->frameId, (jint) frame->flags);
 		}
 	}
 };

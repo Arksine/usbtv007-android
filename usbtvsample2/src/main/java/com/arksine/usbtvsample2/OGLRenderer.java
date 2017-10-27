@@ -43,13 +43,11 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
     private FloatBuffer mTexVertexBuf;
     private FloatBuffer mPosVertexBuf;
     private ShortBuffer mIndicesBuf;
-    private ByteBuffer mYmaskBuf;
 
     private int mShaderProgramId;
     private int mPositionAttr;
     private int mTextureAttr;
     private int mYUVTextureId;
-    private int mYmaskId;
 
 
     public OGLRenderer(Context context, DeviceParams params) {
@@ -111,17 +109,6 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
         GLES20.glUniform1i(mYUVTextureId, 1);
         GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, frame.getWidth()/2,
                 frame.getHeight(), 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, frame.getFrameBuf());
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
-
-        // Set up Y-Mask Texture
-        mYmaskBuf.position(0);
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE2);
-        GLES20.glUniform1i(mYmaskId, 2);
-        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE, frame.getWidth(),
-                frame.getHeight(), 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, mYmaskBuf);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
@@ -136,6 +123,7 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
 
     @Override
     public void onSurfaceChanged(GL10 gl, int width, int height) {
+        Timber.d("Surface Changed:\nNew Width: %d\nNew Height: %d", width, height);
         // should make sure the viewport always fills the screen
         GLES20.glViewport(0, 0, width, height);
     }
@@ -157,15 +145,6 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
         int yuvTextureName = textureNames[0];
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, yuvTextureName);
-
-        // Set up the y-mask texture
-        GLES20.glEnable(GLES20.GL_TEXTURE_2D);
-        mYmaskId = GLES20.glGetUniformLocation(mShaderProgramId, "y_mask");
-        int[] maskTexNames = new int[1];
-        GLES20.glGenTextures(1, maskTexNames, 0);
-        int maskTexName = maskTexNames[0];
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE2);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, maskTexName);
 
         // Clear Background
         GLES20.glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
@@ -206,17 +185,6 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
                 .order(ByteOrder.nativeOrder()).asShortBuffer();
         mIndicesBuf.put(indices).position(0);
 
-        int yuvBufSize = mParams.getFrameHeight() * mParams.getFrameWidth();
-
-        // Init YUV Index buffer.  If the byte is 0, the Y-Value is x.  If the
-        // byte is 2, the Y-Value is z.
-        mYmaskBuf = ByteBuffer.allocate(yuvBufSize)
-                .order(ByteOrder.nativeOrder());
-        for (int i = 0; i < yuvBufSize; i++) {
-            mYmaskBuf.put((byte)((i % 2) * 2));
-        }
-        mYmaskBuf.position(0);
-
     }
 
     private void initShaderProgram() {
@@ -244,7 +212,6 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
 
                 "varying vec2 v_texCoord;                           \n" +
                 "uniform sampler2D yuv_texture;                     \n" +
-                "uniform sampler2D y_mask;                     \n" +
 
                 "void main (void){                                  \n" +
                 "   float r, g, b, y, u, v;                         \n" +
@@ -253,12 +220,16 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
 
                 // Get the Pixel and Y-Value mask
                 "   yuvPixel = texture2D(yuv_texture, v_texCoord);  \n" +
-                "   yPosition = texture2D(y_mask, v_texCoord).x;    \n"+
+
+                // The Y-position is determined by its location in the viewport.
+                // Since FragCoords are centered, floor them to get the zeroed position.
+                // That coordinate mod 2 should give something close to a zero or a 1.
+                "   yPosition = mod(floor(gl_FragCoord.x), 2.0f);      \n"+
 
 
                 // If the mask is zero (or thereabout), use the 1st y-value.
                 // Otherwise use the 2nd.
-                "   if (yPosition < 1.0f) {                            \n"+
+                "   if (yPosition < 0.5f) {                         \n"+
                 "       y = yuvPixel.x;                             \n"+
                 "   } else {                                        \n"+
                 "       y = yuvPixel.z;                             \n"+

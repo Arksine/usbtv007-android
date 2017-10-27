@@ -18,15 +18,14 @@
 // TODO: See if I can find the max bulk size in one of the headers
 #define MAX_USBFS_BULK_SIZE 16384
 
-typedef std::function<void(usbdevfs_urb*)> IsonchronousCallback;
+typedef std::function<void(usbdevfs_urb*)> UrbCallback;
 
 class AndroidUsbDevice;
 
 namespace UsbDevice {
-	struct ThreadContext {
-		AndroidUsbDevice*       parent;
-		IsonchronousCallback    callback;
-		bool*                   isoThreadRunning;
+	struct UrbContext {
+		AndroidUsbDevice*       usbDevice;
+		UrbCallback             callback;
 	};
 }
 
@@ -44,15 +43,17 @@ private:
 	uint8_t     _isoEndpoint;
 	uint32_t    _maxIsoPacketLength;
 	uint8_t     _numIsoPackets;
-	bool        _isoThreadRunning;
+	bool        _urbThreadRunning;
 
-	UsbDevice::ThreadContext*   _isoThreadCtx;
-	std::thread*                _isoThread;
-	std::mutex                  _isoMutex;
+	UsbDevice::UrbContext       _isoUrbCtx;
+	UsbDevice::UrbContext       _bulkUrbCtx;
+	std::thread*                _urbThread;
+	std::mutex                  _urbMutex;
 	usbdevfs_urb**              _isoUrbPool;
 
 
 
+	void reapUrbAsync();
 	int bulkRead(uint8_t endpoint, unsigned int length,
 	             unsigned int timeout, void* data);
 	int bulkWrite(uint8_t endpoint, unsigned int length,
@@ -65,7 +66,7 @@ private:
 public:
 
 
-	AndroidUsbDevice(int fd, IsonchronousCallback callback);
+	AndroidUsbDevice(int fd);
 	~AndroidUsbDevice();
 
 	int getFileDescriptor() {
@@ -73,7 +74,7 @@ public:
 	}
 
 	bool isIsoThreadRunning() {
-		return _isoThreadRunning;
+		return _urbThreadRunning;
 	}
 
 	bool setInterface(unsigned int interface, unsigned int altSetting);
@@ -85,7 +86,7 @@ public:
 	                 unsigned int timeout, void* data);
 
 	bool initIsoTransfers(uint8_t numTransfers, uint8_t endpoint, uint32_t packetLength,
-	                      uint8_t numberOfPackets);
+	                      uint8_t numberOfPackets, UrbCallback callback);
 
 	bool submitIsoUrb(usbdevfs_urb *urb, uint8_t endpoint, uint32_t packetLength,
 	                  uint8_t numberOfPackets);
@@ -93,8 +94,8 @@ public:
 	bool resubmitIsoUrb(usbdevfs_urb *urb);
 
 	bool discardIsoTransfers();
-	bool startIsoAsyncRead();
-	void stopIsoAsyncRead();
+	bool startUrbAsyncRead();
+	void stopUrbAsyncRead();
 	usbdevfs_urb* isoReadSync(bool wait);
 };
 
