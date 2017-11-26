@@ -10,6 +10,18 @@
 
 void frame_process_thread(Driver::ThreadContext* ctx);
 
+// TODO: Some audio notes:  The structure seems simple, the bulk transfer comes in 256-byte packets with 4-byte headers
+// So when processing a buffer I simply process in 256 byte segments, skipping the first 4-bytes.  The
+// Rest is the payload.  The driver uses a transfer size of 20480, which is 20160 of payload.  This
+// is approximately 100ms of audio based on the parameters below, so I think its safe to assume
+// that the device replies to bulk transfers in that interval.  I'm best off using bulk continuation
+// to get all of the data, but its tricky to implement.
+//
+// The driver uses the following params:
+// Rate: 48800 Hz
+// Channels - 2
+// Depth - 16-bits
+
 UsbTvDriver::UsbTvDriver(JNIEnv *env, JavaCallback* cb, jobject params)
 		: _paramsHelper(env){
 
@@ -58,6 +70,7 @@ UsbTvDriver::UsbTvDriver(JNIEnv *env, JavaCallback* cb, jobject params)
 
 #if defined(PROFILE_FRAME)
 	_framePoolSpins = 0;
+	_isoMaxCheck = false;
 #endif
 	// TODO: Initialize Audio Vars
 
@@ -204,10 +217,10 @@ bool UsbTvDriver::startStreaming(jobject params) {
 		}
 
 		// Setup Isonchronous Usb Streaming
-		success =_usbConnection->initIsoTransfers(USBTV_ISOC_TRANSFERS, _isoEndpoint,
-		                                          _maxIsoPacketSize, _numIsoPackets,
-		                                          std::bind(&UsbTvDriver::onUrbReceived, this,
-		                                                    std::placeholders::_1));
+		success = _usbConnection->initIsoUrbs(USBTV_ISOC_TRANSFERS, _isoEndpoint,
+		                                      _maxIsoPacketSize, _numIsoPackets,
+		                                      std::bind(&UsbTvDriver::onUrbReceived, this,
+		                                                std::placeholders::_1));
 
 		if (!success) {
 			LOGI("Could not Initialize Iso Transfers");
@@ -240,10 +253,10 @@ void UsbTvDriver::stopStreaming() {
 		_glRenderer.stop();       // Stop Rendering
 
 		// Stop Iso requests
-		if (_usbConnection->isIsoThreadRunning()) {
+		if (_usbConnection->isUrbThreadRunning()) {
 			_usbConnection->stopUrbAsyncRead();
 		} else {
-			_usbConnection->discardIsoTransfers();
+			_usbConnection->discardIsoUrbs();
 		}
 
 		// Stop Frame processor thread
@@ -283,6 +296,7 @@ void UsbTvDriver::stopStreaming() {
 		LOGD("Incomplete Frames: %d", _incompleteFrameCounter);
 #if defined(PROFILE_FRAME)
 		LOGD("Frame Pool Spins: %ld", _framePoolSpins);
+		LOGD("Iso packets larger than 16KB recd: %s", _isoMaxCheck ? "true" : "false");
 #endif
 	}
 }
@@ -498,9 +512,19 @@ void UsbTvDriver::onUrbReceived(usbdevfs_urb *urb) {
 	unsigned int packetLength;
 	unsigned int packetOffset = 0;
 
+	// TODO: Check indexes 6 and 7 to see if they are always empty.  This is a check
+	// to see if the USBDEVFS buffer limit of 16KB is applicable to iso transfers as well
+
 	for (int i = 0; i < urb->number_of_packets; i++) {
 		packetLength = urb->iso_frame_desc[i].actual_length;
 		buffer += packetOffset;
+
+#if defined(PROFILE_FRAME)
+		if ((i > 5) && packetLength > 0) {
+			_isoMaxCheck = true;
+		}
+#endif
+
 		if (urb->iso_frame_desc[i].status == 0) {
 			int count = packetLength / USBTV_PACKET_SIZE;
 			for (int j = 0; j < count; j++) {
@@ -510,6 +534,9 @@ void UsbTvDriver::onUrbReceived(usbdevfs_urb *urb) {
 		}
 		packetOffset = urb->iso_frame_desc[i].length;
 	}
+
+	// Resubmit urb
+	((UsbDevice::UrbContext *) urb->usercontext)->usbDevice->resubmitUrb(urb);
 }
 
 /**
@@ -755,7 +782,7 @@ void frame_process_thread(Driver::ThreadContext* ctx) {
 		 * Process times typically range between less than 1ms to 5ms, with spikes no higher
 		 * than 10 ms.  This  falls in acceptable parameters.
 		 */
-		auto startTime = std::chrono::system_clock::now();
+		auto startTime = std::chrono::steady_clock::now();
 #endif
 
 		if (frame == nullptr) {
@@ -774,7 +801,7 @@ void frame_process_thread(Driver::ThreadContext* ctx) {
 
 #if defined(PROFILE_FRAME)
 		auto processTime = std::chrono::duration_cast<std::chrono::milliseconds>(
-				std::chrono::system_clock::now() - startTime);
+				std::chrono::steady_clock::now() - startTime);
 
 		maxTime = (processTime.count() > maxTime) ? processTime.count() : maxTime;
 		minTime = (processTime.count() < minTime) ? processTime.count() : minTime;

@@ -7,8 +7,8 @@
 
 #include <jni.h>
 #include <string>
-#include "util.h"
-#include "usbtv_definitions.h"
+#include "../util.h"
+#include "../usbtv_definitions.h"
 
 // TODO: I should make the base of this abstract, then inherit from it, requiring the
 // child to implement invoke.  Also, the second method (_getBufMethod) should be in the

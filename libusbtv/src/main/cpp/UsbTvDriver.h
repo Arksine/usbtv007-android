@@ -10,9 +10,9 @@
 #include "usbtv_definitions.h"
 #include "AndroidUsbDevice.h"
 #include "FrameRenderer.h"
-#include "JavaCallback.h"
+#include "JNIHelpers/JavaCallback.h"
 #include "ConcurrentQueue/blockingconcurrentqueue.h"
-#include "DeviceParamsHelper.h"
+#include "JNIHelpers/DeviceParamsHelper.h"
 
 class UsbTvDriver;
 
@@ -73,6 +73,7 @@ private:
 
 #if defined(PROFILE_FRAME)
 	long _framePoolSpins;
+	bool _isoMaxCheck;
 #endif
 
 	/* TODO: Audio Members */

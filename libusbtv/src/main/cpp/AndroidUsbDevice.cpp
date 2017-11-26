@@ -5,29 +5,56 @@
 #include "AndroidUsbDevice.h"
 #include "util.h"
 #include <cstdlib>
+#include <linux/version.h>
+
+#define PROFILE_VIDEO_URB
 
 // TODO: If a bulk transfer returns -EPIPE, it is stalled.  Need to ioctl send clear halt
-
-
 
 AndroidUsbDevice::AndroidUsbDevice(int fd) {
 	_fileDescriptor = fd;
 	_urbThread = nullptr;
-	_isoUrbPool = nullptr;
-	_isoTransfersAllocated = 0;
-	_isoTransfersSubmitted = 0;
-	_isoEndpoint = 0;
-	_maxIsoPacketLength = 0;
-	_numIsoPackets = 0;
+	_isoUrbsSubmitted = 0;
+	_bulkUrbsSubmitted = 0;
 	_urbThreadRunning = false;
+	checkCapabilities();
 }
 
 AndroidUsbDevice::~AndroidUsbDevice() {
 	if (_urbThreadRunning) {
 		stopUrbAsyncRead();
 	}
-	discardIsoTransfers();
-	freeIsoTransfers();
+
+	freeBulkUrbs();
+	freeIsoUrbs();
+}
+
+/**
+ *  Kernel versions >= 3.6.0 support Scatter-Gather techniques for bulk transfers using buffers
+ *  larger than 16KB as long as the host controller supports it.  This function checks to
+ *  the kernel version to see if it is supported.  If not, Bulk Continuation must be used
+ *  for large buffers.  Bulk continuation was added in kernel 2.6.32, and considering that
+ *  Usbhost was added in API 12 which had a kernel of 2.6.36, it should always be supported.
+ *
+ *  It should be noted that XHCI (USB 3.0) does not support Bulk Continuation, but it should
+ *  in theory support scatter-gather
+ */
+void AndroidUsbDevice::checkCapabilities() {
+	uint32_t caps;
+	int ret = ioctl(_fileDescriptor, USBDEVFS_GET_CAPABILITIES, &caps);
+	if (ret == 0) {
+		_scatterGatherEnabled = (caps & USBDEVFS_CAP_BULK_SCATTER_GATHER) > 0;
+		LOGD("Scatter-Gather enabled status: %s", _scatterGatherEnabled ? "true" : "false");
+		if (!_scatterGatherEnabled) {
+			bool bulkContEnabled = (caps & USBDEVFS_CAP_BULK_CONTINUATION) > 0;
+			if (!bulkContEnabled) {
+				LOGE("Oh shit, neither scatter-gather nor bulk continuation is available");
+			}
+		}
+	} else {
+		LOGD("Device capability query failed");
+		_scatterGatherEnabled = false;
+	}
 }
 
 /**
@@ -130,7 +157,7 @@ int AndroidUsbDevice::bulkRead(uint8_t endpoint, unsigned int length, unsigned i
 		int xfer = (length > MAX_USBFS_BULK_SIZE) ? MAX_USBFS_BULK_SIZE : length;
 
 		bulk.ep = endpoint;
-		bulk.len = xfer;
+		bulk.len = (unsigned int)xfer;
 		bulk.timeout = timeout;
 		bulk.data = outBuf;
 		retry = 0;
@@ -191,7 +218,7 @@ int AndroidUsbDevice::bulkWrite(uint8_t endpoint, unsigned int length, unsigned 
 		int xfer = (length > MAX_USBFS_BULK_SIZE) ? MAX_USBFS_BULK_SIZE : length;
 
 		bulk.ep = endpoint;
-		bulk.len = xfer;
+		bulk.len = (unsigned int)xfer;
 		bulk.timeout = timeout;
 		bulk.data = outBuf;
 
@@ -212,7 +239,7 @@ int AndroidUsbDevice::bulkWrite(uint8_t endpoint, unsigned int length, unsigned 
 }
 
 /**
- * Allocates, initializes, and submits the requested number of isonchronous usb transfers.
+ * Allocates, initializes, and submits the requested number of isochronous usb transfers.
  * These transfers are for input.
  *
  * @param numTransfers
@@ -222,47 +249,55 @@ int AndroidUsbDevice::bulkWrite(uint8_t endpoint, unsigned int length, unsigned 
  * @param callback
  * @return
  */
-bool AndroidUsbDevice::initIsoTransfers(uint8_t numTransfers, uint8_t endpoint,
-                                        uint32_t packetLength, uint8_t numberOfPackets,
-                                        UrbCallback callback) {
-
+bool AndroidUsbDevice::initIsoUrbs(uint8_t numTransfers, uint8_t endpoint,
+                                   uint32_t packetLength, uint8_t numberOfPackets,
+                                   UrbCallback callback) {
 	_urbMutex.lock();
 	bool success = true;
-	if (_isoTransfersSubmitted > 0) {
+	if (_isoUrbsSubmitted > 0) {
 		// TODO: Should I just return false?
-		discardIsoTransfers();
+		discardIsoUrbs();
 	}
 
 	// Allocate transfers to memory.  If transfers are already allocated, delete the old ones.
-	if (_isoTransfersAllocated > 0) {
-		freeIsoTransfers();
+	if (_isoUrbPool.size() > 0) {
+		freeIsoUrbs();
 	}
 
-	_isoUrbCtx.usbDevice = this;
-	_isoUrbCtx.callback = callback;
-	allocateIsoTransfers(packetLength, numberOfPackets, numTransfers);
+	uint32_t urbSize = sizeof(usbdevfs_urb) + (numberOfPackets * sizeof(usbdevfs_iso_packet_desc));
+	uint32_t isoBufferSize = packetLength * numberOfPackets;
+	LOGD("Iso Urb Size: %d\n Buffer Size: %d", (int) urbSize, (int) isoBufferSize);
 
+	// Allocate, Initialize, and submit Iso Urbs
 	for (int i = 0; i < numTransfers; i++) {
 
-		if (!submitIsoUrb(_isoUrbPool[i], endpoint, packetLength, numberOfPackets)) {
-			break;
+		usbdevfs_urb* urb = allocateUrb(urbSize, isoBufferSize, callback);
+		urb->type = USBDEVFS_URB_TYPE_ISO;
+		urb->endpoint = endpoint;
+		urb->flags = USBDEVFS_URB_ISO_ASAP;
+		urb->number_of_packets = numberOfPackets;
+		((UsbDevice::UrbContext*)urb->usercontext)->poolIndex = (uint8_t )i;
+
+		for (int j = 0; j < numberOfPackets; j++) {
+			urb->iso_frame_desc[j].length = packetLength;
 		}
 
-		_isoTransfersSubmitted++;
+		if (!submitUrb(urb)) {
+			deleteUrb(urb);
+			break;
+		}
+		_isoUrbsSubmitted++;
+		_isoUrbPool.push_back(urb);
 	}
 
-	if (_isoTransfersSubmitted != numTransfers) {
+	if (_isoUrbsSubmitted != numTransfers) {
 		LOGE("Could not submit all URBs, discarding.\nSubmitted: %d",
-		     _isoTransfersSubmitted);
+		     _isoUrbsSubmitted);
 
 		// discard submitted iso transfers
-		discardIsoTransfers();
+		discardIsoUrbs();
+		freeIsoUrbs();
 		success = false;
-	} else {
-		// save the variables for resubmission
-		_isoEndpoint = endpoint;
-		_maxIsoPacketLength = packetLength;
-		_numIsoPackets = numberOfPackets;
 	}
 
 	_urbMutex.unlock();
@@ -271,39 +306,17 @@ bool AndroidUsbDevice::initIsoTransfers(uint8_t numTransfers, uint8_t endpoint,
 }
 
 /**
- * Initializes and submits an isonchronous urb.  The urb should be an input urb.  This
+ * Initializes and submits an isochronous urb.  The urb should be an input urb.  This
  * function requres that the URB and its buffer have already been allocated.
  *
- * @param urb               The urb to initialize and submit
- * @param endpoint          The usb endpoint for input iso transfers
- * @param packetLength      The maximum input packet size
- * @param numberOfPackets   The number of packets allowed for each iso transfer
- * @return True if successful, false if ioctl returns an error
+ * @param urb               The urb to submit
  */
-bool AndroidUsbDevice::submitIsoUrb(usbdevfs_urb *urb, uint8_t endpoint, uint32_t packetLength,
-                                    uint8_t numberOfPackets) {
+bool AndroidUsbDevice::submitUrb(usbdevfs_urb *urb) {
 	if (urb == nullptr) {
 		LOGD("Cannot submit null urb");
 		return false;
 	}
 
-	urb->type = USBDEVFS_URB_TYPE_ISO;
-	urb->endpoint = endpoint;
-	urb->status = 0;
-	urb->flags = USBDEVFS_URB_ISO_ASAP;
-	urb->buffer_length = packetLength * numberOfPackets;
-	urb->actual_length = 0;
-	urb->start_frame = 0;
-	urb->number_of_packets = numberOfPackets;
-	urb->error_count = 0;
-	urb->signr = 0;
-	urb->usercontext = &_isoUrbCtx;
-
-	for (int i = 0; i < numberOfPackets; i++) {
-		urb->iso_frame_desc[i].length = packetLength;
-		urb->iso_frame_desc[i].actual_length = 0;
-		urb->iso_frame_desc[i].status = 0;
-	}
 
 	int ret = ioctl(_fileDescriptor, USBDEVFS_SUBMITURB, urb);
 	if (ret < 0) {
@@ -316,81 +329,391 @@ bool AndroidUsbDevice::submitIsoUrb(usbdevfs_urb *urb, uint8_t endpoint, uint32_
 }
 
 /**
- * Resubmits a URB previously initialized by a call initIsoTransfers
+ * Creates and Submits a bulk urb for asyncronous I/O
+ *
+ * @param endpoint      The endpoint for the bulk transfer
+ * @param bufferSize    The size of the buffer to write to
+ * @param callback      The callback to execute when the Urb has been completed
+ * @return              True if the submission was successful, otherwise false
+ */
+bool AndroidUsbDevice::submitBulkUrb(uint8_t endpoint, uint32_t bufferSize,
+                                              UrbCallback callback) {
+
+	bool success = true;
+
+	_urbMutex.lock();
+	if (bufferSize <= MAX_USBFS_BULK_SIZE || _scatterGatherEnabled) {
+		// Either the transfer fits into the buffer, or the kernel / controller supports
+		// scatter/gather buffer transfers.  We can send the data in on request
+		usbdevfs_urb* bulkUrb = allocateUrb(sizeof(usbdevfs_urb), bufferSize, callback);
+
+		bulkUrb->type = USBDEVFS_URB_TYPE_BULK;
+		bulkUrb->endpoint = endpoint;
+		bulkUrb->flags = 0;         // I don't think I need any flags here
+		((UsbDevice::UrbContext*)bulkUrb->usercontext)->poolIndex = (uint8_t)_bulkUrbPool.size();
+
+		if (!submitUrb(bulkUrb)) {
+			deleteUrb(bulkUrb);
+			success = false;
+		} else {
+			_bulkUrbsSubmitted++;
+			_bulkUrbPool.push_back(bulkUrb);
+		}
+	} else {
+		// Create the mainurb that will be sent back to the user.  I can't use the allocateUrb
+		// function because the context is different
+		uint32_t urbCount = 0;
+		size_t urbSize = sizeof(usbdevfs_urb);
+		usbdevfs_urb* mainUrb = (usbdevfs_urb*)calloc(1, urbSize);
+		mainUrb->buffer = malloc(bufferSize);
+
+		UsbDevice::ContinuousBulkContext* bulkContext = new UsbDevice::ContinuousBulkContext;
+
+		mainUrb->usercontext = bulkContext;
+		mainUrb->type = USBDEVFS_URB_TYPE_BULK;
+		mainUrb->endpoint = endpoint;
+		mainUrb->flags = USBDEVFS_URB_BULK_CONTINUATION;
+
+		// Get the URB Count.  It will be the requested buffersize divided by the maximum bulk
+		// size that usbdevfs can transfer.  If there is a remainder, then we need an additional urb
+		urbCount = bufferSize / MAX_USBFS_BULK_SIZE;
+		uint32_t lastUrbSize = bufferSize % MAX_USBFS_BULK_SIZE;
+		if (lastUrbSize > 0) {
+			urbCount++;
+		} else {
+			lastUrbSize = MAX_USBFS_BULK_SIZE;
+		}
+
+		// Allocate the array of suburbs
+		bulkContext->subUrbCount = (uint8_t)urbCount;
+		bulkContext->subUrbs = (usbdevfs_urb**)malloc(urbCount*sizeof(usbdevfs_urb*));
+
+
+		uint8_t* curBuf;
+		for (uint8_t i = 0; i < urbCount; i ++) {
+			curBuf = (uint8_t*)mainUrb->buffer + (urbCount * MAX_USBFS_BULK_SIZE);
+			usbdevfs_urb* urb = (usbdevfs_urb*) calloc(1, urbSize);
+			urb->type = USBDEVFS_URB_TYPE_BULK;
+			urb->endpoint = endpoint;
+			urb->buffer = curBuf;
+
+			UsbDevice::UrbContext* context =  new UsbDevice::UrbContext;
+			context->usbDevice = this;
+			context->callback = callback;
+			context->contBulkUrb = mainUrb;
+			context->poolIndex = i;
+			urb->usercontext = context;
+
+			if (i == 0) {
+				// first urb request
+				urb->flags = USBDEVFS_URB_SHORT_NOT_OK;
+				urb->buffer_length = MAX_USBFS_BULK_SIZE;
+				context->isLast = false;
+			} else if (i == (urbCount - 1)) {
+				// last urb request
+				urb->flags = USBDEVFS_URB_BULK_CONTINUATION;
+				urb->buffer_length = lastUrbSize;
+				context->isLast = true;
+			} else {
+				urb->flags = USBDEVFS_URB_BULK_CONTINUATION | USBDEVFS_URB_SHORT_NOT_OK;
+				urb->buffer_length = MAX_USBFS_BULK_SIZE;
+				context->isLast = false;
+			}
+
+			bulkContext->subUrbs[i] = urb;
+		}
+
+		// Submit continuous urbs
+		for (uint8_t i = 0; i < bulkContext->subUrbCount; i++) {
+			if (!submitUrb(bulkContext->subUrbs[i])) {
+				success = false;
+			}
+		}
+
+		if (!success) {
+			LOGD("Error submitting continuous bulk urb");
+			// One of the urbs did not submit, discard and delete
+			for (uint8_t i = 0;i <= bulkContext->subUrbCount; i++) {
+				ioctl(_fileDescriptor, USBDEVFS_DISCARDURB, bulkContext->subUrbs[i]);
+			}
+			// TODO: It is possible that some of the urbs were successfully submitted.  In that
+			// situation deleting here might cause an issue.  If a successfully submitted URB
+			// is in the process of being reaped and we delete it then it will result in a
+			// segmentation fault.
+			//
+			// Update - libusb agrees.  They set a flag on their version of a "mainUrb"
+			// noting the error,and wait for submitted URBs to be reaped.  Essentially they
+			// return success here.
+			//
+			// After I fix this, I need to do the same for iso transfers.  Currently if one errors
+			// out I break the loop, discard and delete.  That could also result in a seg fault.
+			deleteContinuousBulkUrb(mainUrb);
+		} else {
+			// success, add it to the pool
+			_bulkUrbsSubmitted++;
+			_bulkUrbPool.push_back(mainUrb);
+		}
+
+	}
+
+	_urbMutex.unlock();
+
+	return success;
+}
+
+bool AndroidUsbDevice::killUrb(usbdevfs_urb *urb) {
+	if (urb == nullptr) {
+		return false;
+	}
+
+	_urbMutex.lock();
+
+	bool success = true;
+
+	if ((urb->flags & USBDEVFS_URB_BULK_CONTINUATION) == 0) {
+		// Not Bulk Continuation, resubmit
+		int ret = ioctl(_fileDescriptor, USBDEVFS_DISCARDURB, urb);
+		if (ret != 0) {
+			LOGD("Error discarding urb, code: %d", ret);
+			success = false;
+		}
+	} else {
+		int ret;
+		UsbDevice::ContinuousBulkContext* context = (UsbDevice::ContinuousBulkContext*)urb->usercontext;
+		for (int i = 0;i <= context->subUrbCount; i++) {
+			ret = ioctl(_fileDescriptor, USBDEVFS_DISCARDURB, context->subUrbs[i]);
+			if (ret != 0) {
+				LOGD("Error discarding continuous bulk urb at sub index %d code: %d", i, ret);
+				success = false;
+			}
+		}
+	}
+
+	_urbMutex.unlock();
+	return success;
+}
+
+/**
+ * Resubmits a URB previously allocated and submitted
  * @param urb The Urb to resubmit
  * @return true if succesful, false otherwise
  */
-bool AndroidUsbDevice::resubmitIsoUrb(usbdevfs_urb *urb) {
-	if (_isoTransfersSubmitted > 0) {
-		return submitIsoUrb(urb, _isoEndpoint, _maxIsoPacketLength, _numIsoPackets);
-	} else {
+bool AndroidUsbDevice::resubmitUrb(usbdevfs_urb *urb) {
+	if (urb == nullptr) {
 		return false;
 	}
+
+	_urbMutex.lock();
+
+	urb->status = 0;
+	urb->actual_length = 0;
+	urb->error_count = 0;
+
+	if (urb->type == USBDEVFS_URB_TYPE_ISO) {
+		for (int i = 0; i < urb->number_of_packets; i++) {
+			urb->iso_frame_desc[i].actual_length = 0;
+			urb->iso_frame_desc[i].status = 0;
+		}
+	} else if (urb->flags & USBDEVFS_URB_BULK_CONTINUATION > 0) {
+		// continuous bulk urb
+		bool success = true;
+		UsbDevice::ContinuousBulkContext* bulkContext = (UsbDevice::ContinuousBulkContext*)urb
+				->usercontext;
+		for (uint8_t i = 0; i < bulkContext->subUrbCount; i++) {
+			bulkContext->subUrbs[i]->status = 0;
+			bulkContext->subUrbs[i]->actual_length = 0;
+			bulkContext->subUrbs[i]->error_count = 0;
+			if (!submitUrb(bulkContext->subUrbs[i])) {
+				success = false;
+			}
+		}
+
+		_urbMutex.unlock();
+		return success;
+	}
+
+
+	_urbMutex.unlock();
+
+	return submitUrb(urb);
+
 }
 
 /**
  * Removes iso transfers from usbdevfs if they are submitted
  * @return true on success, false if ioctl returns an error
  */
-bool AndroidUsbDevice::discardIsoTransfers() {
-	if (_isoTransfersSubmitted == 0) {
+bool AndroidUsbDevice::discardIsoUrbs() {
+	if (_isoUrbPool.empty()) {
 		return true;
 	}
 	int ret = 0;
 	bool success = true;
 
-	for (int i = 0; i < _isoTransfersSubmitted; i++) {
+	for (int i = 0; i < _isoUrbPool.size(); i++) {
 
 		ret = ioctl(_fileDescriptor, USBDEVFS_DISCARDURB, _isoUrbPool[i]);
 
 		if (ret < 0) {
-			LOGE("Error discarding urb index: %d\nRet Value: %d", i, ret);
+			LOGE("Error discarding iso urb index: %d\nRet Value: %d", i, ret);
 			success = false;
 		} else {
-			LOGD("Successfully discarded urb, index: %d", i);
+			LOGD("Successfully iso discarded urb, index: %d", i);
 		}
 	}
 
-	_isoTransfersSubmitted = 0;
+	_isoUrbsSubmitted = 0;
 
 	return success;
 }
 
-void AndroidUsbDevice::freeIsoTransfers() {
-	if (_isoTransfersSubmitted > 0) {
-		discardIsoTransfers();
+bool AndroidUsbDevice::discardBulkUrbs() {
+	if (_bulkUrbPool.empty()) {
+		return true;
 	}
-	if (_isoUrbPool != nullptr) {
-		for (int i = 0; i < _isoTransfersAllocated; i++) {
-			if (_isoUrbPool[i] != nullptr) {
-				free(_isoUrbPool[i]->buffer);
-				free(_isoUrbPool[i]);
-				_isoUrbPool[i] = nullptr;
+
+	int ret = 0;
+	bool success = true;
+
+	for (int i = 0; i < _bulkUrbPool.size(); i++) {
+		if ((_bulkUrbPool[i]->flags & USBDEVFS_URB_BULK_CONTINUATION) == 0) {
+			// regular urb
+			ret = ioctl(_fileDescriptor, USBDEVFS_DISCARDURB, _bulkUrbPool[i]);
+
+			if (ret < 0) {
+				LOGE("Error discarding bulk urb index: %d\nRet Value: %d", i, ret);
+				success = false;
+			} else {
+				LOGD("Successfully discarded bulk urb, index: %d", i);
+			}
+		} else {
+			UsbDevice::ContinuousBulkContext* context =
+					(UsbDevice::ContinuousBulkContext*)_bulkUrbPool[i]->usercontext;
+			for (int j = 0; j < context->subUrbCount; j++) {
+				ret = ioctl(_fileDescriptor, USBDEVFS_DISCARDURB, context->subUrbs[j]);
+				if (ret < 0) {
+					LOGE("Error discarding continuous bulk urb, index: %d, sub index: %d"
+							     "\nRet Value: %d", i, j, ret);
+					success = false;
+				} else {
+					LOGD("Successfully discarded continuous bulk urb, index: %d, sub index: %d",
+					     i, j);
+				}
 			}
 		}
-		delete [] _isoUrbPool;
-		_isoUrbPool = nullptr;
 	}
 
-	_isoTransfersAllocated = 0;
+	_bulkUrbsSubmitted = 0;
+	return success;
 }
 
-void AndroidUsbDevice::allocateIsoTransfers(uint32_t packetLength, uint8_t numberOfPackets,
-                                            uint8_t numTransfers) {
-	if (_isoUrbPool == nullptr) {
-		size_t urbSize =
-				sizeof(usbdevfs_urb) + (numberOfPackets * sizeof(usbdevfs_iso_packet_desc));
-		size_t isoBufferSize = packetLength * numberOfPackets;
-		LOGD("Urb Size: %d\n Buffer Size: %d", (int) urbSize, (int) isoBufferSize);
+bool AndroidUsbDevice::clearHalt(uint8_t endpoint) {
+	int ret;
 
-		_isoUrbPool = new usbdevfs_urb*[numTransfers];
+	ret = ioctl(_fileDescriptor, USBDEVFS_CLEAR_HALT, endpoint);
 
-		for (int i = 0; i < numTransfers; i++) {
-			_isoUrbPool[i] = (usbdevfs_urb *) malloc(urbSize);
-			_isoUrbPool[i]->buffer = malloc(size_t(isoBufferSize));
-		}
-		_isoTransfersAllocated = numTransfers;
+	if (ret == 0) {
+		return true;
+	} else {
+		LOGD("Unable to clear halt on Endpoint %d, return code: %d", endpoint, ret);
+		return false;
 	}
+}
+
+/**
+ * Allocates a URB and its associated buffers.  The buffer, context, and buffer_length members are
+ * initialized, all other members are zeroed.
+ * @param urbSize
+ * @param bufferSize
+ * @param callback
+ * @return
+ */
+usbdevfs_urb* AndroidUsbDevice::allocateUrb(uint32_t urbSize, uint32_t bufferSize,
+                                            UrbCallback callback) {
+	usbdevfs_urb* urb = (usbdevfs_urb *) calloc(1, urbSize);
+	if (urb == nullptr) {
+		return nullptr;
+	}
+
+	urb->buffer = malloc(bufferSize);
+	if (urb->buffer == nullptr) {
+		free(urb);
+		return nullptr;
+	}
+	urb->buffer_length = bufferSize;
+
+	// Interestingly, Using malloc to generate the memory for this structure causes a Segmentation Fault
+	// when attempting to assign the callback.  My assumption is that sizeof doesn't work
+	// correctly on a struct containing std::function
+	UsbDevice::UrbContext* ctx = new UsbDevice::UrbContext;
+	ctx->usbDevice = this;
+	ctx->callback = callback;
+	urb->usercontext = ctx;
+	ctx->contBulkUrb = nullptr;
+
+	return urb;
+}
+
+void AndroidUsbDevice::deleteUrb(usbdevfs_urb *urb) {
+	if (urb != nullptr) {
+		delete (UsbDevice::UrbContext*) urb->usercontext;
+		free(urb->buffer);
+		free(urb);
+	}
+}
+
+void AndroidUsbDevice::deleteContinuousBulkUrb(usbdevfs_urb *continousUrb) {
+
+	UsbDevice::ContinuousBulkContext* context = (UsbDevice::ContinuousBulkContext*)continousUrb
+			->usercontext;
+
+	// Delete the sub urb list and their associated contexts
+	for (int i = 0; i < context->subUrbCount; i++) {
+		delete context->subUrbs[i]->usercontext;
+		free(context->subUrbs[i]);
+	}
+	free(context->subUrbs);
+
+	// delete the buffer and continuous urb
+	free(continousUrb->buffer);
+	free(continousUrb);
+
+	// delete the main urb context;
+	delete context;
+}
+
+void AndroidUsbDevice::freeIsoUrbs() {
+	if (_isoUrbsSubmitted > 0) {
+		discardIsoUrbs();
+	}
+
+	for (int i = 0; i < _isoUrbPool.size(); i++) {
+		deleteUrb(_isoUrbPool[i]);
+		_isoUrbPool[i] = nullptr;
+	}
+	_isoUrbPool.clear();
+
+}
+
+void AndroidUsbDevice::freeBulkUrbs() {
+
+	if (_bulkUrbsSubmitted > 0) {
+		discardBulkUrbs();
+	}
+
+	for (int i = 0; i > _bulkUrbPool.size(); i++) {
+		if ((_bulkUrbPool[i]->flags & USBDEVFS_URB_BULK_CONTINUATION) == 0) {
+			// not a continuous bulk urb, okay to delete
+			deleteUrb(_bulkUrbPool[i]);
+			_bulkUrbPool[i] = nullptr;
+		} else {
+			// This is a continuous bulk URB.  The urb itself is never submitted.  Its context
+			// differs from others, it contains an array to sub-urbs that ARE submitted
+			deleteContinuousBulkUrb(_bulkUrbPool[i]);
+			_bulkUrbPool[i] = nullptr;
+		}
+	}
+	_bulkUrbPool.clear();
 }
 
 /**
@@ -406,7 +729,7 @@ bool AndroidUsbDevice::startUrbAsyncRead() {
 		_urbThread = new std::thread(&AndroidUsbDevice::reapUrbAsync, this);
 		if ( _urbThread == nullptr) {
 			_urbThreadRunning = false;
-			LOGE("Error starting isonchronous transfer thread");
+			LOGE("Error starting isochronous transfer thread");
 			success = false;
 		}
 	} else {
@@ -424,14 +747,13 @@ void AndroidUsbDevice::stopUrbAsyncRead() {
 	_urbMutex.lock();
 	if (_urbThread != nullptr) {
 		_urbThreadRunning = false;
-		// TODO: I could submit a dummy urb to stop this thread if zero urbs are submitted.
-		// That way this class can handle the async thread, rather than the calling
-		// class
-
+		// TODO: I don't necessarily need to join here.  If the IOCTL is stuck, it will return
+		// with an error code after the file descriptor is closed.  The problem is if I
+		// start and stop without closing the device
 		_urbThread->join();
 		delete _urbThread;
 		_urbThread = nullptr;
-		discardIsoTransfers();
+		discardIsoUrbs();
 
 	}
 	_urbMutex.unlock();
@@ -468,22 +790,60 @@ void AndroidUsbDevice::reapUrbAsync() {
 	LOGD("Iso thread start.  Thread Running: %s",
 	     _urbThreadRunning ? "true" : "false");
 
+#if defined(PROFILE_VIDEO_URB)
+	long urbMinTime = 1000000;
+	long urbMaxTime = 0;
+	uint32_t urbCount = 0;
+#endif
+
 	while (_urbThreadRunning) {
 
-		usbdevfs_urb* urb = nullptr;
+		usbdevfs_urb *urb = nullptr;
 		ret = ioctl(_fileDescriptor, USBDEVFS_REAPURB, &urb);
 
-		// TODO: I need to be able to handle ISO and bulk urbs.  I could change the context
-		// For Bulk urbs or just look at the URB type
 
 		switch (ret) {
-			case 0:
-				// Execute the callback
-				((UsbDevice::UrbContext*)urb->usercontext)->callback(urb);
+			case 0: {
+#if defined(PROFILE_VIDEO_URB)
+				auto startTime = std::chrono::steady_clock::now();
+#endif
 
-				break;
-			case -EAGAIN:
-				// Recoverable error, attempt to resubmit
+				UsbDevice::UrbContext* context = (UsbDevice::UrbContext*)urb->usercontext;
+				// Execute the callback
+				if (context->contBulkUrb == nullptr) {
+					context->callback(urb);
+				} else {
+					// TODO: If I get a non-zero status here, is it returned to the IOCTL?
+					// If not, do I need to handle it here?  Will usbdevfs kill the entire
+					// series so I don't get the last urb?  Check to see how libusb handles it
+
+					// Continuous Bulk Urb
+					if (context->isLast || urb->status != 0) {
+						context->contBulkUrb->actual_length += urb->actual_length;
+						context->contBulkUrb->status = urb->status;
+						context->contBulkUrb->error_count = urb->error_count;
+						context->callback(context->contBulkUrb);
+					} else {
+						context->contBulkUrb->actual_length += urb->actual_length;
+					}
+
+				}
+
+#if defined(PROFILE_VIDEO_URB)
+				auto processTime = std::chrono::duration_cast<std::chrono::microseconds>(
+						std::chrono::steady_clock::now() - startTime);
+				urbMinTime = processTime.count() < urbMinTime ? processTime.count() : urbMinTime;
+				urbMaxTime = processTime.count() > urbMaxTime ? processTime.count() : urbMinTime;
+				urbCount++;
+				if (urbCount > 1800) {
+					LOGD("Last 1800 packets, Max Urb Process Time: %ld us\nMin Urb Process Time: %ld us",
+					     urbMaxTime, urbMinTime);
+					urbMaxTime = 0;
+					urbMinTime = 1000000;
+					urbCount = 0;
+				}
+			}
+#endif
 				break;
 			case -ENODEV:
 			case -ENOENT:
@@ -493,20 +853,32 @@ void AndroidUsbDevice::reapUrbAsync() {
 				// an Exit to the Parent Driver so it can clean up
 				_urbThreadRunning = false;
 				return;
-			default:
-				// Recoverable?
+			case -EPIPE:  // Recoverable, resubmit
+				// If Type bulk, clear halt
+				if (urb->type == USBDEVFS_URB_TYPE_BULK) {
+					clearHalt(urb->endpoint);
+				}
+			case -EAGAIN:   // Recoverable, resubmit
+			default:        // Recoverable, resubmit
+
+				// resubmit if this is one of our urbs
+				if (urb != nullptr) {
+					UsbDevice::UrbContext* context = (UsbDevice::UrbContext *) urb->usercontext;
+					if (context->contBulkUrb == nullptr) {
+						// standard urb
+						resubmitUrb(urb);
+					} else {
+						// continuous bulk urb, kill the entire series then resubmit
+						usbdevfs_urb* mainurb = context->contBulkUrb;
+						killUrb(mainurb);
+						resubmitUrb(mainurb);
+					}
+				}
 				break;
 		}
-
-		// TODO: callback function should resubmit if it is run on another thread.  That
-		// means I should only resubmit here if I am dealing with recoverable error
-
-		// resubmit if this is one of our urbs
-		if (urb != nullptr) {
-			// TODO: This could be a bulk urb as well
-			((UsbDevice::UrbContext*)urb->usercontext)->usbDevice->resubmitIsoUrb(urb);
-		}
 	}
+
+
 }
 
 

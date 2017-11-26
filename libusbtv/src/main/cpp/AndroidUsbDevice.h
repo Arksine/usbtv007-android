@@ -9,23 +9,37 @@
 #include <cstdint>
 #include <linux/usbdevice_fs.h>
 #include <linux/usb/ch9.h>
+#include <vector>
 #include <thread>
 #include <mutex>
 #include <functional>
 
 
 #define MAX_USBFS_BULK_RETRIES 5
-// TODO: See if I can find the max bulk size in one of the headers
 #define MAX_USBFS_BULK_SIZE 16384
 
 typedef std::function<void(usbdevfs_urb*)> UrbCallback;
 
 class AndroidUsbDevice;
 
+// TODO: I can add some data to the UrbContext for transfers that are bulk-continuation, then
+// send the last transfer
 namespace UsbDevice {
+	// Context used for the primary continuous bulk transfer.  It contains indices for
+	// the subtransfers used to actually fetch the data
+
+	// TODO: Should I add poolIndex to the below as well?
+	struct ContinuousBulkContext {
+		uint8_t                 subUrbCount;
+		usbdevfs_urb**          subUrbs;
+	};
+
 	struct UrbContext {
 		AndroidUsbDevice*       usbDevice;
 		UrbCallback             callback;
+		uint8_t                 poolIndex;
+		usbdevfs_urb*           contBulkUrb = nullptr;      // used only for continuous URBs
+		bool                    isLast      = true;        // used only for continuous URBs
 	};
 }
 
@@ -36,32 +50,33 @@ class AndroidUsbDevice {
 private:
 
 	int     _fileDescriptor;
-	uint8_t _isoTransfersAllocated;
-	uint8_t _isoTransfersSubmitted;
+	bool    _scatterGatherEnabled;
 
-	// iso urb vars
-	uint8_t     _isoEndpoint;
-	uint32_t    _maxIsoPacketLength;
-	uint8_t     _numIsoPackets;
-	bool        _urbThreadRunning;
-
-	UsbDevice::UrbContext       _isoUrbCtx;
-	UsbDevice::UrbContext       _bulkUrbCtx;
+	uint8_t                     _isoUrbsSubmitted;
+	uint8_t                     _bulkUrbsSubmitted;
+	bool                        _urbThreadRunning;
 	std::thread*                _urbThread;
 	std::mutex                  _urbMutex;
-	usbdevfs_urb**              _isoUrbPool;
+	std::vector<usbdevfs_urb*>  _isoUrbPool;
+	std::vector<usbdevfs_urb*>  _bulkUrbPool;
 
 
-
+	void checkCapabilities();
 	void reapUrbAsync();
+	bool clearHalt(uint8_t endpoint);
 	int bulkRead(uint8_t endpoint, unsigned int length,
 	             unsigned int timeout, void* data);
 	int bulkWrite(uint8_t endpoint, unsigned int length,
 	             unsigned int timeout, void* data);
+	bool submitUrb(usbdevfs_urb *urb);
 
+	usbdevfs_urb* allocateUrb(uint32_t urbSize, uint32_t bufferSize, UrbCallback callback);
 
-	void allocateIsoTransfers(uint32_t packetLength, uint8_t numberOfPackets, uint8_t numTransfers);
-	void freeIsoTransfers();
+	void deleteUrb(usbdevfs_urb* urb);
+	void deleteContinuousBulkUrb(usbdevfs_urb* continousUrb);
+
+	void freeIsoUrbs();
+	void freeBulkUrbs();
 
 public:
 
@@ -73,7 +88,7 @@ public:
 		return _fileDescriptor;
 	}
 
-	bool isIsoThreadRunning() {
+	bool isUrbThreadRunning() {
 		return _urbThreadRunning;
 	}
 
@@ -85,15 +100,17 @@ public:
 	int bulkTransfer(uint8_t endpoint, unsigned int length,
 	                 unsigned int timeout, void* data);
 
-	bool initIsoTransfers(uint8_t numTransfers, uint8_t endpoint, uint32_t packetLength,
-	                      uint8_t numberOfPackets, UrbCallback callback);
+	bool initIsoUrbs(uint8_t numTransfers, uint8_t endpoint, uint32_t packetLength,
+	                 uint8_t numberOfPackets, UrbCallback callback);
 
-	bool submitIsoUrb(usbdevfs_urb *urb, uint8_t endpoint, uint32_t packetLength,
-	                  uint8_t numberOfPackets);
 
-	bool resubmitIsoUrb(usbdevfs_urb *urb);
+	bool submitBulkUrb(uint8_t endpoint, uint32_t bufferSize, UrbCallback callback);
+	bool killUrb(usbdevfs_urb *urb);
 
-	bool discardIsoTransfers();
+	bool resubmitUrb(usbdevfs_urb *urb);
+
+	bool discardIsoUrbs();
+	bool discardBulkUrbs();
 	bool startUrbAsyncRead();
 	void stopUrbAsyncRead();
 	usbdevfs_urb* isoReadSync(bool wait);
