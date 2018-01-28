@@ -64,7 +64,6 @@ UsbTvDriver::UsbTvDriver(JNIEnv *env, JavaCallback* cb, jobject params)
 	_frameProcessContext = new Driver::ThreadContext;
 	_frameProcessContext->usbtv = this;
 	_frameProcessContext->useCallback = &_useCallback;
-	_frameProcessContext->renderer = &_glRenderer;
 	_frameProcessContext->threadRunning = &_processThreadRunning;
 	_frameProcessContext->callback = cb;
 
@@ -186,10 +185,6 @@ bool UsbTvDriver::startStreaming(jobject params) {
 		allocateFramePool(params);
 		_usbInputFrame = fetchFrameFromPool();
 
-		// Init Native renderer y-mask
-
-		_glRenderer.initYmask(_frameParams.frameWidth, _frameParams.frameHeight);
-
 		// Start Frame processing thread
 		if (_frameProcessThread == nullptr) {
 			_processThreadRunning = true;
@@ -249,8 +244,6 @@ void UsbTvDriver::stopStreaming() {
 		_streamActive = false;
 
 		// TODO: Stop Audio
-
-		_glRenderer.stop();       // Stop Rendering
 
 		// Stop Iso requests
 		if (_usbConnection->isUrbThreadRunning()) {
@@ -340,16 +333,6 @@ int UsbTvDriver::getControl(int control) {
 	}
 	return 0;
  }
-
-/**
- * Sets the render surface, received from Java.  If the surface received is null, rendering
- * will be stopped
- *
- * @param surface The Android surface object to render to
- */
-void UsbTvDriver::setRenderWindow(ANativeWindow* window) {
-	_glRenderer.setRenderWindow(window);
-}
 
 /**
  * Polls for a complete frame.
@@ -768,7 +751,7 @@ void frame_process_thread(Driver::ThreadContext* ctx) {
 		return;
 	}
 
-	ctx->renderer->threadStartCheck();
+	// Attach native thread to Java thread
 	ctx->callback->attachThread();
 
 	UsbTvFrame* frame;
@@ -794,9 +777,9 @@ void frame_process_thread(Driver::ThreadContext* ctx) {
 			ctx->callback->invoke(frame);
 		}
 
-		// Render a frame.  If the render window is not set, the frame's lock will
-		// simply be decremented.
-		ctx->renderer->renderFrame(frame);
+		// TODO: since I am removing the native renderer I can skip the if statement and
+		// remove the lock counter.  I should be able to use and atomic flag in its place
+		frame->lock--;
 
 
 #if defined(PROFILE_FRAME)
@@ -820,7 +803,6 @@ void frame_process_thread(Driver::ThreadContext* ctx) {
 	}
 
 	ctx->callback->detachThread();
-	ctx->renderer->threadEndCheck();
 
 	return;
 }

@@ -25,7 +25,6 @@ public abstract class IUsbTvDriver {
 
     public abstract DeviceParams getDeviceParams();
 
-    public abstract void setDrawingSurface(Surface drawingSurface);
     public abstract void setOnFrameReceivedListener(UsbTv.onFrameReceivedListener cb);
 
     public abstract void setInput(UsbTv.InputSelection input);

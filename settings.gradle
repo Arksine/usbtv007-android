@@ -1,1 +1,1 @@
-include ':libusbtv', ':usbtvsample1', ':usbtvsample2', ':usbtvsample3'
+include ':libusbtv', ':usbtvsample1', ':usbtvsample2'

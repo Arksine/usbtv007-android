@@ -9,7 +9,6 @@
 #include <android/native_window.h>
 #include "usbtv_definitions.h"
 #include "AndroidUsbDevice.h"
-#include "FrameRenderer.h"
 #include "JNIHelpers/JavaCallback.h"
 #include "ConcurrentQueue/blockingconcurrentqueue.h"
 #include "JNIHelpers/DeviceParamsHelper.h"
@@ -20,7 +19,6 @@ namespace Driver {
 	struct ThreadContext {
 		UsbTvDriver*    usbtv;
 		JavaCallback*   callback;
-		FrameRenderer*  renderer;
 		bool*           useCallback;
 		bool*           threadRunning;
 	};
@@ -66,8 +64,6 @@ private:
 
 	moodycamel::BlockingConcurrentQueue<UsbTvFrame*>*    _frameProcessQueue;
 
-	FrameRenderer _glRenderer;
-
 	uint32_t    _droppedFrameCounter;
 	uint32_t    _incompleteFrameCounter;
 
@@ -102,7 +98,6 @@ public:
 
 
 	void setCallback(bool shouldUse) {_useCallback = shouldUse;}
-	void setRenderWindow(ANativeWindow* window);
 
 	UsbTvFrame* getFrame();
 	bool clearFrameLock(int framePoolIndex);

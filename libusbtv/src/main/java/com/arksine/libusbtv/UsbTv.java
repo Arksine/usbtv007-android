@@ -72,7 +72,6 @@ public class UsbTv extends Handler {
         SET_NORM,
         SET_SCANTYPE,
         SET_CONTROL,
-        SET_SURFACE,
         SET_FRAME_LISTENER;
 
         private static final NativeAction[] ACTION_ARRAY = NativeAction.values();
@@ -444,7 +443,6 @@ public class UsbTv extends Handler {
     // Native Methods
     private native boolean initialize(DeviceParams params);
     private native void dispose();
-    private native void setSurface(Surface renderSurface);
     private native void useCallback(boolean shouldUse);
     private native boolean startStreaming(DeviceParams params);
     private native void stopStreaming();
@@ -486,13 +484,6 @@ public class UsbTv extends Handler {
         @Override
         public DeviceParams getDeviceParams() {
             return mDeviceParams;
-        }
-
-        @Override
-        public void setDrawingSurface(Surface drawingSurface) {
-            Message msg = obtainMessage(NativeAction.SET_SURFACE.ordinal(),
-                    drawingSurface);
-            sendMessage(msg);
         }
 
         @Override
@@ -596,11 +587,17 @@ public class UsbTv extends Handler {
                     mDriverCallbacks.onError();
                 }
                 break;
-            case SET_SURFACE:
-                Surface surface = (Surface)msg.obj;
-                setSurface(surface);
-                break;
             case SET_FRAME_LISTENER:
+                // TODO: This could cause a problem.  I may need to set this atomically or
+                // synchronize it.  Syncronizing every callback may be costly though.
+                // There is a case where the listener could change (IE set to null) simultaneous
+                // with the callback is being executed in the rendering thread
+
+                // The other way around this is to force the user to stop the renderer
+                // to change the callback.  The user could be forced to set it in the device
+                // params and I can remove the function from IUsbTvDriver.  If the user doesn't
+                // provide then either return false in the open function or stub the callback
+                // with an empty function.  That is probably the better way to go.
                 mOnFrameReceivedListener = (onFrameReceivedListener) msg.obj;
                 boolean use = mOnFrameReceivedListener != null;
                 useCallback(use);

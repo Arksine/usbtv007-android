@@ -79,20 +79,6 @@ JNIEXPORT void JNICALL Java_com_arksine_libusbtv_UsbTv_dispose(JNIEnv* jenv,
 
 }
 
-JNIEXPORT void JNICALL Java_com_arksine_libusbtv_UsbTv_setSurface(JNIEnv* jenv,
-                                                                  jobject thisObj,
-                                                                  jobject surface) {
-	if (usbtv != nullptr) {
-		if (surface != nullptr) {
-			ANativeWindow* window = ANativeWindow_fromSurface(jenv, surface);
-			usbtv->setRenderWindow(window);
-		} else {
-			usbtv->setRenderWindow(nullptr);
-		}
-
-	}
-}
-
 JNIEXPORT void JNICALL Java_com_arksine_libusbtv_UsbTv_useCallback(JNIEnv* jenv,
                                                                    jobject thisObj,
                                                                    jboolean shouldUse) {
