@@ -347,16 +347,20 @@ UsbTvFrame* UsbTvDriver::getFrame() {
 
 /**
  * Allows an external frame consumer to clear the lock on a frame buffer when
- * it is finished processing, which makes it for the driver to write.
+ * it is finished processing.  This returns the buffer to the frame pool, making it available
+ * to write.
  *
  * @param framePoolIndex    The index of the frame pool to release
  * @return  True if successful, otherwise false
  */
 bool UsbTvDriver::clearFrameLock(int framePoolIndex) {
 	bool success = true;
-	_framePoolMutex.lock();
+	_framePoolMutex.lock();  // Because its possible for this to be called when destroying the
+							 // frame pool a mutex is necessary
+
+	// TODO: instead of using a counter, just use an atomic flag.
 	if (_framePool != nullptr) {
-		// the Pool Index is strictly controlled, so it shouldn't be possible to get a
+		// Note: the Pool Index is strictly controlled, so it shouldn't be possible to get a
 		// frame index outside of the array bounds
 
 		_framePool[framePoolIndex]->lock--; // Decrement pool lock counter
@@ -773,14 +777,8 @@ void frame_process_thread(Driver::ThreadContext* ctx) {
 		}
 
 		if (*(ctx->useCallback)) {
-			frame->lock++;      // this is a second reference, add a counter to the lock
 			ctx->callback->invoke(frame);
 		}
-
-		// TODO: since I am removing the native renderer I can skip the if statement and
-		// remove the lock counter.  I should be able to use and atomic flag in its place
-		frame->lock--;
-
 
 #if defined(PROFILE_FRAME)
 		auto processTime = std::chrono::duration_cast<std::chrono::milliseconds>(

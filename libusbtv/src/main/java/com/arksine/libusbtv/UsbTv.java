@@ -588,19 +588,15 @@ public class UsbTv extends Handler {
                 }
                 break;
             case SET_FRAME_LISTENER:
-                // TODO: This could cause a problem.  I may need to set this atomically or
-                // synchronize it.  Syncronizing every callback may be costly though.
-                // There is a case where the listener could change (IE set to null) simultaneous
-                // with the callback is being executed in the rendering thread
-
-                // The other way around this is to force the user to stop the renderer
-                // to change the callback.  The user could be forced to set it in the device
-                // params and I can remove the function from IUsbTvDriver.  If the user doesn't
-                // provide then either return false in the open function or stub the callback
-                // with an empty function.  That is probably the better way to go.
-                mOnFrameReceivedListener = (onFrameReceivedListener) msg.obj;
-                boolean use = mOnFrameReceivedListener != null;
-                useCallback(use);
+                // Make sure that the device isn't streaming
+                if (!mIsStreaming.get()) {
+                    mOnFrameReceivedListener = (onFrameReceivedListener) msg.obj;
+                    boolean use = mOnFrameReceivedListener != null;
+                    useCallback(use);
+                } else {
+                    Timber.i("Error, cannot change the frame listener while streaming");
+                    mDriverCallbacks.onError();
+                }
                 break;
             default:
                 Timber.i("Unknown Native Command Received");
