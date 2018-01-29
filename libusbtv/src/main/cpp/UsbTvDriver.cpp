@@ -273,13 +273,13 @@ void UsbTvDriver::stopStreaming() {
 		UsbTvFrame* frame;
 		while(_frameProcessQueue->try_dequeue(frame)) {
 			if (frame != nullptr) {
-				frame->lock = 0;
+				frame->lock.clear(std::memory_order_release);
 			}
 		}
 
 		// Clear lock for frame that usb was reading into;
 		if (_usbInputFrame != nullptr) {
-			_usbInputFrame->lock = 0;
+			_usbInputFrame->lock.clear(std::memory_order_release);
 			_usbInputFrame = nullptr;
 		}
 
@@ -363,7 +363,7 @@ bool UsbTvDriver::clearFrameLock(int framePoolIndex) {
 		// Note: the Pool Index is strictly controlled, so it shouldn't be possible to get a
 		// frame index outside of the array bounds
 
-		_framePool[framePoolIndex]->lock--; // Decrement pool lock counter
+		_framePool[framePoolIndex]->lock.clear(std::memory_order_release);
 	} else {
 		success = false;
 	}
@@ -414,7 +414,7 @@ void UsbTvDriver::allocateFramePool(jobject params) {
 			_framePool[i] = new UsbTvFrame;
 			_framePool[i]->buffer = malloc(_frameParams.bufferSize);
 			_framePool[i]->flags = 0;
-			_framePool[i]->lock = 0;
+			_framePool[i]->lock.clear(std::memory_order_release);
 			_framePool[i]->frameId = 0;
 			_framePool[i]->params = &_frameParams;
 
@@ -441,7 +441,7 @@ void UsbTvDriver::freeFramePool() {
 	_framePoolMutex.lock();
 	if (_framePool!= nullptr && !_streamActive) {
 		for (int i = 0; i < _framePoolSize; i++) {
-			if (_framePool[i]->lock != 0) {
+			if (_framePool[i]->lock.test_and_set(std::memory_order_acquire)) {
 				LOGD("frame index %d still has a lock when attempting to free", i);
 			}
 			_env->DeleteGlobalRef(_framePool[i]->javaFrame);
@@ -464,15 +464,16 @@ UsbTvFrame* UsbTvDriver::fetchFrameFromPool() {
 	UsbTvFrame* frame;
 	uint8_t index = 0;
 
-	// Loop until an unlocked frame is found.
-	while(true) {
+	// TODO: Add debug logic to profile to determine if the pool is spinning for a long period of time
+
+	// Loop until an unlocked frame is found while the stream is active.  If the stream stops
+	// and this pool is spinning then it will break so the thread can quit.
+	while(_streamActive) {
 		frame = _framePool[index];
 
-		// Test lock for current frame.  A frame is unlocked when the counter reaches 0.
-		// The counter is incremented for each reference to a frame (at this point there is
-		// a maximum of two)
-		if (frame->lock == 0) {
-			frame->lock++;
+		// Test lock for current frame.  The test atomically sets the lock active.  If
+		// the lock was previously inactive then this is a free frame and it will be returned.
+		if (!frame->lock.test_and_set(std::memory_order_acquire)) {
 			frame->flags = FRAME_START;
 			return frame;
 		}
@@ -486,6 +487,10 @@ UsbTvFrame* UsbTvDriver::fetchFrameFromPool() {
 #endif
 		}
 	}
+
+	// to reach this point the stream is no longer active.  Just return any frame, as it
+	// shouldn't be processed again.
+	return _framePool[0];
 }
 
 /**
