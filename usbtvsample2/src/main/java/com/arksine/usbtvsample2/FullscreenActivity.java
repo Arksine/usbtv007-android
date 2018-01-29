@@ -140,7 +140,9 @@ public class FullscreenActivity extends AppCompatActivity {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    mCameraView.onPause();
+                    if (mRenderer != null) {
+                        mCameraView.onPause();
+                    }
                     finish();
                 }
             });
@@ -173,6 +175,10 @@ public class FullscreenActivity extends AppCompatActivity {
             }
         });
 
+        // TODO: If no device is found I am getting a null pointer exception because
+        // I haven't set a renderer for mCameraView before finishing onCreate.  I need a better
+        // way to deal with this
+
         // Register Usb Reciever
         UsbTv.registerUsbReceiver(this);
 
@@ -192,14 +198,18 @@ public class FullscreenActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
-        mCameraView.onPause();
+        if (mRenderer != null) {
+            mCameraView.onPause();
+        }
         // stop streaming if streaming
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        mCameraView.onResume();
+        if (mRenderer != null) {
+            mCameraView.onResume();
+        }
         // start streaming if not streaming
     }
 

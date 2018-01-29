@@ -224,12 +224,12 @@ public class OGLRenderer implements GLSurfaceView.Renderer, UsbTv.onFrameReceive
                 // The Y-position is determined by its location in the viewport.
                 // Since FragCoords are centered, floor them to get the zeroed position.
                 // That coordinate mod 2 should give something close to a zero or a 1.
-                "   yPosition = mod(floor(gl_FragCoord.x), 2.0f);      \n"+
+                "   yPosition = mod(floor(gl_FragCoord.x), 2.0);      \n"+
 
 
                 // If the mask is zero (or thereabout), use the 1st y-value.
                 // Otherwise use the 2nd.
-                "   if (yPosition < 0.5f) {                         \n"+
+                "   if (yPosition < 0.5) {                         \n"+
                 "       y = yuvPixel.x;                             \n"+
                 "   } else {                                        \n"+
                 "       y = yuvPixel.z;                             \n"+

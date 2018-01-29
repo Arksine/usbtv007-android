@@ -537,6 +537,7 @@ public class UsbTv extends Handler {
                 }
                 break;
             case CLOSE_DEVICE:
+                // TODO: This is hanging sometimes, need to fix.  It may be the due to the frame pool spinning
                 closeDevice();
                 break;
             case START_STREAMING:

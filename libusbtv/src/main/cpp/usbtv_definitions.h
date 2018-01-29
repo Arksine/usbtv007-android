@@ -90,7 +90,7 @@ struct UsbTvFrame {
 	uint32_t        flags;
 	jobject         javaFrame;     // This is a reference to Java Class implementation of this frame.
 
-	std::atomic_uint_fast8_t lock = ATOMIC_VAR_INIT(0);
+	std::atomic_flag lock = ATOMIC_FLAG_INIT;
 };
 
 /*Control Register Definitions*/
