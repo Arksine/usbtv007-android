@@ -514,7 +514,7 @@ bool AndroidUsbDevice::resubmitUrb(usbdevfs_urb *urb) {
 			urb->iso_frame_desc[i].actual_length = 0;
 			urb->iso_frame_desc[i].status = 0;
 		}
-	} else if (urb->flags & USBDEVFS_URB_BULK_CONTINUATION > 0) {
+	} else if ((urb->flags & USBDEVFS_URB_BULK_CONTINUATION) > 0) {
 		// continuous bulk urb
 		bool success = true;
 		UsbDevice::ContinuousBulkContext* bulkContext = (UsbDevice::ContinuousBulkContext*)urb
@@ -669,7 +669,7 @@ void AndroidUsbDevice::deleteContinuousBulkUrb(usbdevfs_urb *continousUrb) {
 
 	// Delete the sub urb list and their associated contexts
 	for (int i = 0; i < context->subUrbCount; i++) {
-		delete context->subUrbs[i]->usercontext;
+		delete (UsbDevice::UrbContext*)(context->subUrbs[i]->usercontext);
 		free(context->subUrbs[i]);
 	}
 	free(context->subUrbs);
