@@ -1,6 +1,6 @@
+// Copyright (C) 2020 Eric Callahan <arksine.code@gmail.com>
 //
-// Created by Eric on 10/8/2017.
-//
+// This file may be distributed under the terms of the GNU GPLv3 license
 
 #include <cstdlib>
 #include <android/native_window_jni.h>

@@ -1,3 +1,6 @@
+// Copyright (C) 2020 Eric Callahan <arksine.code@gmail.com>
+//
+// This file may be distributed under the terms of the GNU GPLv3 license
 //
 // A helper class to get Fields from the DeviceParams object.  This takes care
 // of getting refences to the fields and/or methods, as well as cleaning up
